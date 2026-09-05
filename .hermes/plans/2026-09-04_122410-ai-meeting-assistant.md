@@ -456,7 +456,9 @@ Implement the MVP as thin end-to-end slices rather than completing each technica
 
 **User outcome:** Create a meeting, choose microphone plus system audio, acknowledge consent, press **Record**, capture a short meeting, press **Stop**, and find the retained raw recording locally. Before **Record**, the app must remain completely silent.
 
-**Includes:** Rust/Tauri shell, macOS permission/capability checks, explicit Record/Pause/Resume/Stop state machine, separate microphone/system-audio capture tracks, a derived mixed PCM stream for future WhisperX input, crash-safe local recording, SQLite session metadata, and no WhisperX/notes dependency yet.
+**Includes:** Rust/Tauri shell, macOS permission/capability checks, explicit Record/Pause/Resume/Stop state machine, separate microphone/system-audio capture tracks, a derived mixed PCM stream for future WhisperX input, crash-safe local recording, SQLite session metadata, no WhisperX/notes dependency yet, and the initial UI shell in `apps/desktop/ui/`.
+
+**Implementation status:** The cross-platform Rust core, retained recording bundle, macOS adapter boundary, Tauri-facing state surface, thin React UI shell, rolling-window coordinator, versioned JSON-lines worker boundary, transcript reconciliation, final WAV materialization, durable local JSON session metadata, verified export/deletion, notes generation, and macOS packaging metadata are implemented. Native ScreenCaptureKit callbacks, real macOS permission testing, actual model-backed WhisperX inference, and signed notarized packaging remain host-dependent validation work.
 
 **Acceptance checks:**
 

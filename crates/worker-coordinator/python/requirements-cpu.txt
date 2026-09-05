@@ -1,0 +1,8 @@
+# WhisperX worker environment
+# Keep this file in lockstep with the tested Python/Torch/WhisperX combination.
+--extra-index-url https://download.pytorch.org/whl/cpu
+whisperx==3.7.4
+numpy==2.2.6
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+pytest==8.4.2

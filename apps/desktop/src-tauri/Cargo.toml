@@ -1,0 +1,23 @@
+[package]
+name = "meeting-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+meeting-application = { path = "../../../crates/application" }
+meeting-capture = { path = "../../../crates/capture" }
+meeting-domain = { path = "../../../crates/domain" }
+meeting-storage = { path = "../../../crates/storage" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", default-features = false, features = ["compression", "tray-icon", "wry"] }
+thiserror = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+linux-ui = ["tauri/wry"]
