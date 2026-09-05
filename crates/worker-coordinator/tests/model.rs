@@ -167,3 +167,17 @@ fn a_model_lock_prevents_concurrent_downloads() {
         whisperx_worker::ModelError::AlreadyDownloading
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_model_assets_are_not_considered_ready() {
+    let assets = [("config.json", br"{}".as_slice())];
+    let root = tempdir().unwrap();
+    let manager = ModelManager::new(root.path().join("models"), test_manifest(&assets)).unwrap();
+    let installed = manager.installed_path();
+    std::fs::create_dir_all(&installed).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", installed.join("config.json")).unwrap();
+
+    assert_eq!(manager.status().state, ModelState::NotDownloaded);
+    assert!(manager.validate_installation().is_err());
+}

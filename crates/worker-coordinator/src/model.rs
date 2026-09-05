@@ -307,7 +307,12 @@ pub fn model_is_ready(path: impl AsRef<Path>) -> bool {
             "vocabulary.json",
         ]
         .iter()
-        .all(|asset| path.join(asset).is_file())
+        .all(|asset| {
+            let asset_path = path.join(asset);
+            fs::symlink_metadata(asset_path)
+                .map(|metadata| metadata.file_type().is_file())
+                .unwrap_or(false)
+        })
 }
 
 impl ModelManager {
@@ -696,6 +701,12 @@ fn is_safe_segment(value: &str) -> bool {
 
 fn validate_file(path: &Path, asset: &ModelAsset) -> Result<(), ModelError> {
     let metadata = fs::metadata(path).map_err(ModelError::Io)?;
+    let file_type = fs::symlink_metadata(path)
+        .map_err(ModelError::Io)?
+        .file_type();
+    if !file_type.is_file() {
+        return Err(ModelError::Incomplete(asset.path.clone()));
+    }
     let actual_size = metadata.len();
     if actual_size != asset.size {
         return Err(ModelError::SizeMismatch {
