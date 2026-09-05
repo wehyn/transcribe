@@ -31,6 +31,7 @@ pub trait WorkerFactory {
 
 pub struct DefaultWorkerFactory {
     worker_root: PathBuf,
+    model_path: Option<PathBuf>,
 }
 
 impl Default for DefaultWorkerFactory {
@@ -38,6 +39,7 @@ impl Default for DefaultWorkerFactory {
         Self {
             worker_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../worker-coordinator/python"),
+            model_path: None,
         }
     }
 }
@@ -46,7 +48,17 @@ impl DefaultWorkerFactory {
     pub fn for_resource_root(root: impl AsRef<Path>) -> Self {
         Self {
             worker_root: root.as_ref().to_path_buf(),
+            model_path: None,
         }
+    }
+
+    pub fn with_model_path(mut self, path: impl AsRef<Path>) -> Self {
+        self.model_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn model_path(&self) -> Option<&Path> {
+        self.model_path.as_deref()
     }
 }
 
@@ -69,6 +81,10 @@ impl WorkerFactory for DefaultWorkerFactory {
                     error.to_string(),
                 ))
             })?
+        };
+        let config = match &self.model_path {
+            Some(path) => config.with_model_path(path),
+            None => config,
         };
         let process = whisperx_worker::WorkerProcess::start(&config)?;
         Ok(Box::new(process.into_worker()?))

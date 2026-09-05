@@ -101,6 +101,11 @@ impl WorkerConfig {
         Ok(())
     }
 
+    pub fn with_model_path(mut self, model_path: impl AsRef<Path>) -> Self {
+        self.model = model_path.as_ref().to_string_lossy().into_owned();
+        self
+    }
+
     fn with_paths(python: PathBuf, script: PathBuf) -> Self {
         Self {
             python,

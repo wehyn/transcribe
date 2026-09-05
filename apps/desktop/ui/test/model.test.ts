@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDraftNotes,
@@ -6,8 +6,16 @@ import {
   formatDuration,
   mergeTranscriptSegments,
   normalizeTranscriptPayload,
+  modelStatusLabel,
   serializeMeetingExport,
-} from '../src/model.ts';
+} from '../src/model';
+
+test('model status labels make setup and download states explicit', () => {
+  assert.equal(modelStatusLabel(null), 'Checking model');
+  assert.equal(modelStatusLabel({ model_id: 'large-v3', state: 'not_downloaded', downloaded_bytes: 0, total_bytes: 1, percent: 0 }), 'Model not downloaded');
+  assert.equal(modelStatusLabel({ model_id: 'large-v3', state: 'downloading', downloaded_bytes: 1, total_bytes: 2, percent: 50 }), 'Downloading 50%');
+  assert.equal(modelStatusLabel({ model_id: 'large-v3', state: 'ready', downloaded_bytes: 2, total_bytes: 2, percent: 100 }), 'Ready to record');
+});
 
 const segment = (sequence: number, text: string, provisional = false) => ({
   id: `segment-${sequence}`,

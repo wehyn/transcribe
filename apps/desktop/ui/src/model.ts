@@ -1,5 +1,28 @@
 export type NoteStatus = 'draft' | 'final';
 
+export type ModelState = 'not_downloaded' | 'downloading' | 'ready' | 'error';
+
+export interface ModelStatus {
+  model_id: string;
+  state: ModelState;
+  downloaded_bytes: number;
+  total_bytes: number;
+  percent: number;
+  current_asset?: string | null;
+  install_path?: string | null;
+  error?: string | null;
+}
+
+export function modelStatusLabel(status: ModelStatus | null): string {
+  if (!status) return 'Checking model';
+  switch (status.state) {
+    case 'ready': return 'Ready to record';
+    case 'downloading': return `Downloading ${status.percent}%`;
+    case 'error': return 'Download needs attention';
+    default: return 'Model not downloaded';
+  }
+}
+
 export interface TranscriptSegment {
   id: string;
   sequence: number;

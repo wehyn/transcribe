@@ -37,8 +37,11 @@ in `requirements-cpu.txt` and `pyproject.toml`:
 
 Install these dependencies in a dedicated virtual environment. Do not install
 WhisperX, Torch, or NumPy into the Rust/Tauri runtime. Model files are not
-committed or downloaded during packaging; provision and cache them according
-to the deployment policy for the target Mac.
+committed or bundled. The desktop setup screen downloads
+the pinned model manifest into the app-data `models/` directory, resumes
+partial assets, validates size and SHA-256, and atomically promotes the
+completed directory. Recording remains disabled until that installation is
+ready; model setup never starts the audio capture or WhisperX worker.
 
 ## Local setup
 
