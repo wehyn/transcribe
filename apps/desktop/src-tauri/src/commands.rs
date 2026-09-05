@@ -193,7 +193,6 @@ pub fn create_session(
     title: Option<String>,
     language: Option<LanguageRequest>,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let language = language.unwrap_or(LanguageRequest::English);
     let _title = title.unwrap_or_else(|| "Untitled meeting".to_owned());
     let model = model_manager(&app)?;
@@ -208,6 +207,7 @@ pub fn create_session(
             .join("worker"),
     )
     .with_model_path(model_path);
+    let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let runtime = MeetingRuntime::with_worker_factory(
         CaptureConfig::dual_source(language.into()),
         Box::new(MacOsCaptureSource::new()),
@@ -227,11 +227,11 @@ pub fn accept_consent(state: State<'_, Mutex<DesktopState>>) -> Result<(), Strin
 
 #[tauri::command]
 pub fn record(state: State<'_, Mutex<DesktopState>>, app: tauri::AppHandle) -> Result<(), String> {
-    let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let model_path = model_manager(&app)?.installed_path();
     if !whisperx_worker::model_is_ready(&model_path) {
         return Err("download the WhisperX model before recording".into());
     }
+    let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let runtime = session_or_error(&mut state)?;
     let session_id = runtime.session_id().to_owned();
     let recording_path = app
