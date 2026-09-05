@@ -339,6 +339,11 @@ impl ModelManager {
         self.validate_installation().is_ok()
     }
 
+    pub fn ready_path(&self) -> Result<PathBuf, ModelError> {
+        self.validate_installation()?;
+        Ok(self.installed_path())
+    }
+
     pub fn installed_path(&self) -> PathBuf {
         self.root.join(&self.manifest.model_id)
     }
