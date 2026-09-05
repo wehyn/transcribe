@@ -1,6 +1,6 @@
 export type NoteStatus = 'draft' | 'final';
 
-export type ModelState = 'not_downloaded' | 'downloading' | 'ready' | 'error';
+export type ModelState = 'not_downloaded' | 'downloading' | 'ready' | 'error' | 'canceled';
 
 export interface ModelStatus {
   model_id: string;
@@ -19,6 +19,7 @@ export function modelStatusLabel(status: ModelStatus | null): string {
     case 'ready': return 'Ready to record';
     case 'downloading': return `Downloading ${status.percent}%`;
     case 'error': return 'Download needs attention';
+    case 'canceled': return 'Download canceled';
     default: return 'Model not downloaded';
   }
 }

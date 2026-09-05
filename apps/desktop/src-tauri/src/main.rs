@@ -19,6 +19,7 @@ fn main() {
             commands::session_state,
             commands::model_status,
             commands::model_manifest,
+            commands::model_recover,
             commands::download_model,
             commands::cancel_model_download,
             commands::remove_model,

@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
+use fs2::FileExt;
+
 const MODEL_ID: &str = "large-v3";
 const MODEL_REPOSITORY: &str = "Systran/faster-whisper-large-v3";
 const MODEL_REVISION: &str = "edaa852ec7e145841d8ffdb056a99866b5f0a478";
@@ -164,6 +166,7 @@ pub enum ModelState {
     Downloading,
     Ready,
     Error,
+    Canceled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +335,10 @@ impl ModelManager {
             .map_err(|error| ModelError::InvalidManifest(error.to_string()))
     }
 
+    pub fn is_ready(&self) -> bool {
+        self.validate_installation().is_ok()
+    }
+
     pub fn installed_path(&self) -> PathBuf {
         self.root.join(&self.manifest.model_id)
     }
@@ -351,19 +358,27 @@ impl ModelManager {
             };
         }
 
+        let downloaded_bytes = self.partial_downloaded_bytes();
+        let total_bytes = self.manifest.total_size();
+        if lock_is_held(&self.lock_path()) {
+            return ModelStatus {
+                model_id: self.manifest.model_id.clone(),
+                state: ModelState::Downloading,
+                downloaded_bytes,
+                total_bytes,
+                percent: percent(downloaded_bytes, total_bytes),
+                current_asset: None,
+                install_path: None,
+                error: None,
+            };
+        }
         if let Some(error) = read_error(&self.error_path()) {
             return self.status_with_error(error);
         }
 
-        let downloaded_bytes = self.partial_downloaded_bytes();
-        let total_bytes = self.manifest.total_size();
         ModelStatus {
             model_id: self.manifest.model_id.clone(),
-            state: if self.lock_path().exists() {
-                ModelState::Downloading
-            } else {
-                ModelState::NotDownloaded
-            },
+            state: ModelState::NotDownloaded,
             downloaded_bytes,
             total_bytes,
             percent: percent(downloaded_bytes, total_bytes),
@@ -373,17 +388,27 @@ impl ModelManager {
         }
     }
 
+    pub fn recover_download(&self) -> Result<ModelStatus, ModelError> {
+        if lock_is_held(&self.lock_path()) {
+            return Err(ModelError::AlreadyDownloading);
+        }
+        if fs::symlink_metadata(self.lock_path()).is_ok() {
+            fs::remove_file(self.lock_path()).map_err(ModelError::Io)?;
+        }
+        Ok(self.status())
+    }
+
     pub fn remove(&self) -> Result<(), ModelError> {
-        if self.lock_path().exists() {
+        if lock_is_held(&self.lock_path()) {
             return Err(ModelError::AlreadyDownloading);
         }
         let installed = self.installed_path();
-        if installed.exists() {
-            fs::remove_dir_all(installed).map_err(ModelError::Io)?;
+        if fs::symlink_metadata(&installed).is_ok() {
+            remove_path_without_following_symlink(&installed)?;
         }
         let partial = self.partial_path();
-        if partial.exists() {
-            fs::remove_dir_all(partial).map_err(ModelError::Io)?;
+        if fs::symlink_metadata(&partial).is_ok() {
+            remove_path_without_following_symlink(&partial)?;
         }
         remove_error(&self.error_path());
         Ok(())
@@ -391,21 +416,36 @@ impl ModelManager {
 
     pub fn validate_installation(&self) -> Result<(), ModelError> {
         let install_path = self.installed_path();
+        let install_metadata = fs::symlink_metadata(&install_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                ModelError::Incomplete(self.manifest.model_id.clone())
+            } else {
+                ModelError::Io(error)
+            }
+        })?;
+        if !install_metadata.file_type().is_dir() {
+            return Err(ModelError::Incomplete(self.manifest.model_id.clone()));
+        }
         for asset in &self.manifest.assets {
             let path = safe_join(&install_path, &asset.path)?;
-            let metadata = fs::metadata(&path).map_err(|error| {
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
                 if error.kind() == io::ErrorKind::NotFound {
                     ModelError::Incomplete(asset.path.clone())
                 } else {
                     ModelError::Io(error)
                 }
             })?;
-            if !metadata.is_file() {
+            if !metadata.file_type().is_file() {
                 return Err(ModelError::Incomplete(asset.path.clone()));
             }
             validate_file(&path, asset)?;
         }
         Ok(())
+    }
+
+    pub fn verify_ready(&self) -> Result<PathBuf, ModelError> {
+        self.validate_installation()?;
+        Ok(self.installed_path())
     }
 
     pub fn download<F>(&self, on_progress: F) -> Result<PathBuf, ModelError>
@@ -442,11 +482,20 @@ impl ModelManager {
         if self.validate_installation().is_ok() {
             return Ok(self.installed_path());
         }
+        if fs::symlink_metadata(self.installed_path())
+            .map(|metadata| !metadata.file_type().is_dir())
+            .unwrap_or(false)
+        {
+            return Err(ModelError::Incomplete(self.manifest.model_id.clone()));
+        }
 
         let _lock = DownloadLock::acquire(&self.lock_path())?;
         let partial = self.partial_path();
-        if partial.exists() && !partial.is_dir() {
-            fs::remove_file(&partial).map_err(ModelError::Io)?;
+        if fs::symlink_metadata(&partial)
+            .map(|metadata| !metadata.file_type().is_dir())
+            .unwrap_or(false)
+        {
+            remove_path_without_following_symlink(&partial)?;
         }
         fs::create_dir_all(&partial).map_err(ModelError::Io)?;
         let total_bytes = self.manifest.total_size();
@@ -464,14 +513,19 @@ impl ModelManager {
                 if let Some(parent) = part_path.parent() {
                     fs::create_dir_all(parent).map_err(ModelError::Io)?;
                 }
-                let mut existing = fs::metadata(&part_path)
-                    .map(|metadata| metadata.len())
-                    .unwrap_or(0);
+                let mut existing = match fs::symlink_metadata(&part_path) {
+                    Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
+                    Ok(_) => {
+                        remove_path_without_following_symlink(&part_path)?;
+                        0
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                    Err(error) => return Err(ModelError::Io(error)),
+                };
                 if existing > asset.size {
                     fs::remove_file(&part_path).map_err(ModelError::Io)?;
                     existing = 0;
                 }
-                let prior_existing = existing;
                 if existing == asset.size {
                     if validate_file(&part_path, asset).is_ok() {
                         downloaded_bytes = downloaded_bytes.max(self.partial_downloaded_bytes());
@@ -488,6 +542,7 @@ impl ModelManager {
                     fs::remove_file(&part_path).map_err(ModelError::Io)?;
                     existing = 0;
                 }
+                let prior_existing = existing;
 
                 let mut response = source.open(
                     &self.manifest.asset_url(asset),
@@ -498,6 +553,20 @@ impl ModelManager {
                     fs::remove_file(&part_path).map_err(ModelError::Io)?;
                     existing = 0;
                     response = source.open(&self.manifest.asset_url(asset), None)?;
+                }
+                if let Some(length) = response.content_length {
+                    let expected_length = if response.status == 206 {
+                        asset.size.saturating_sub(prior_existing)
+                    } else {
+                        asset.size
+                    };
+                    if length != expected_length {
+                        return Err(ModelError::SizeMismatch {
+                            asset: asset.path.clone(),
+                            expected: expected_length,
+                            actual: length,
+                        });
+                    }
                 }
                 if response.status != 200 && response.status != 206 {
                     return Err(ModelError::HttpStatus {
@@ -551,7 +620,7 @@ impl ModelManager {
             for asset in &self.manifest.assets {
                 let part_path = safe_join(&partial, &format!("{}.part", asset.path))?;
                 let final_path = safe_join(&partial, &asset.path)?;
-                if part_path.exists() {
+                if fs::symlink_metadata(&part_path).is_ok() {
                     fs::rename(&part_path, &final_path).map_err(ModelError::Io)?;
                 }
             }
@@ -559,8 +628,8 @@ impl ModelManager {
             if let Some(installed_parent) = installed.parent() {
                 fs::create_dir_all(installed_parent).map_err(ModelError::Io)?;
             }
-            if installed.exists() {
-                fs::remove_dir_all(&installed).map_err(ModelError::Io)?;
+            if fs::symlink_metadata(&installed).is_ok() {
+                remove_path_without_following_symlink(&installed)?;
             }
             fs::rename(&partial, &installed).map_err(ModelError::Io)?;
             self.validate_installation()?;
@@ -574,7 +643,12 @@ impl ModelManager {
 
         if let Err(error) = &result {
             match error {
-                ModelError::Canceled => {}
+                ModelError::Canceled => {
+                    emit_progress(
+                        &mut on_progress,
+                        self.progress(ModelState::Canceled, self.partial_downloaded_bytes(), None),
+                    );
+                }
                 _ => {
                     write_error(&self.error_path(), &error.to_string());
                     emit_progress(
@@ -612,7 +686,8 @@ impl ModelManager {
             .map(|asset| {
                 safe_join(&self.partial_path(), &format!("{}.part", asset.path))
                     .ok()
-                    .and_then(|path| fs::metadata(path).ok())
+                    .and_then(|path| fs::symlink_metadata(path).ok())
+                    .filter(|metadata| metadata.file_type().is_file())
                     .map(|metadata| metadata.len().min(asset.size))
                     .unwrap_or(0)
             })
@@ -644,12 +719,13 @@ impl ModelManager {
 }
 
 struct DownloadLock {
+    file: File,
     path: PathBuf,
 }
 
 impl DownloadLock {
     fn acquire(path: &Path) -> Result<Self, ModelError> {
-        OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
@@ -660,7 +736,16 @@ impl DownloadLock {
                     ModelError::Io(error)
                 }
             })?;
+        file.try_lock_exclusive().map_err(|error| {
+            let _ = fs::remove_file(path);
+            if error.kind() == io::ErrorKind::WouldBlock {
+                ModelError::AlreadyDownloading
+            } else {
+                ModelError::Io(error)
+            }
+        })?;
         Ok(Self {
+            file,
             path: path.to_path_buf(),
         })
     }
@@ -668,7 +753,21 @@ impl DownloadLock {
 
 impl Drop for DownloadLock {
     fn drop(&mut self) {
+        let _ = self.file.unlock();
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn lock_is_held(path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
+        return false;
+    };
+    let result = file.try_lock_exclusive();
+    if result.is_ok() {
+        let _ = file.unlock();
+        false
+    } else {
+        true
     }
 }
 
@@ -690,6 +789,15 @@ fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, ModelError> {
     Ok(root.join(relative))
 }
 
+fn remove_path_without_following_symlink(path: &Path) -> Result<(), ModelError> {
+    let metadata = fs::symlink_metadata(path).map_err(ModelError::Io)?;
+    if metadata.file_type().is_symlink() || metadata.file_type().is_file() {
+        fs::remove_file(path).map_err(ModelError::Io)
+    } else {
+        fs::remove_dir_all(path).map_err(ModelError::Io)
+    }
+}
+
 fn is_safe_segment(value: &str) -> bool {
     !value.is_empty()
         && value != "."
@@ -700,10 +808,8 @@ fn is_safe_segment(value: &str) -> bool {
 }
 
 fn validate_file(path: &Path, asset: &ModelAsset) -> Result<(), ModelError> {
-    let metadata = fs::metadata(path).map_err(ModelError::Io)?;
-    let file_type = fs::symlink_metadata(path)
-        .map_err(ModelError::Io)?
-        .file_type();
+    let metadata = fs::symlink_metadata(path).map_err(ModelError::Io)?;
+    let file_type = metadata.file_type();
     if !file_type.is_file() {
         return Err(ModelError::Incomplete(asset.path.clone()));
     }

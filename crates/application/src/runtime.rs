@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use whisperx_worker::{
     CoordinatorError, FinalTranscript, LanguageMode as WorkerLanguageMode, LivePipeline,
-    LiveTranscript, WindowConfig, WorkerTransport,
+    LiveTranscript, ModelManager, WindowConfig, WorkerTransport,
 };
 
 fn worker_language(value: LanguageMode) -> WorkerLanguageMode {
@@ -105,6 +105,8 @@ pub enum ApplicationError {
     RecordingPathMissing,
     #[error("PCM data must contain complete 32-bit float samples")]
     InvalidPcm,
+    #[error("WhisperX model is not installed or failed validation")]
+    ModelNotReady,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +126,7 @@ pub struct MeetingRuntime {
     final_transcript: Option<FinalTranscript>,
     window_config: WindowConfig,
     audio_format: AudioFormat,
+    model_ready: bool,
 }
 
 impl MeetingRuntime {
@@ -151,6 +154,34 @@ impl MeetingRuntime {
         )
     }
 
+    pub fn with_worker_factory_and_model_readiness(
+        config: CaptureConfig,
+        source: Box<dyn CaptureSource>,
+        worker_factory: impl WorkerFactory + 'static,
+        model_ready: bool,
+    ) -> Self {
+        let mut runtime = Self::with_worker_factory(config, source, worker_factory);
+        runtime.model_ready = model_ready;
+        runtime
+    }
+
+    pub fn with_validated_model(
+        config: CaptureConfig,
+        source: Box<dyn CaptureSource>,
+        worker_factory: impl WorkerFactory + 'static,
+        model_manager: &ModelManager,
+    ) -> Result<Self, ApplicationError> {
+        model_manager
+            .validate_installation()
+            .map_err(|_| ApplicationError::ModelNotReady)?;
+        Ok(Self::with_worker_factory_and_model_readiness(
+            config,
+            source,
+            worker_factory,
+            true,
+        ))
+    }
+
     pub fn with_worker_factory_and_pipeline(
         config: CaptureConfig,
         source: Box<dyn CaptureSource>,
@@ -169,6 +200,7 @@ impl MeetingRuntime {
             final_transcript: None,
             window_config,
             audio_format,
+            model_ready: true,
         }
     }
 
@@ -212,6 +244,9 @@ impl MeetingRuntime {
     }
 
     pub fn record(&mut self, root: impl AsRef<Path>) -> Result<(), ApplicationError> {
+        if !self.model_ready {
+            return Err(ApplicationError::ModelNotReady);
+        }
         let root = root.as_ref().to_path_buf();
         let transport = match self.worker_factory.start(WorkerStartContext {
             session_id: self.session_id.clone(),

@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 use meeting_application::{DefaultWorkerFactory, MeetingRuntime};
 use meeting_capture::{CaptureSource, MacOsCaptureSource};
@@ -101,6 +101,14 @@ pub fn model_manifest(app: tauri::AppHandle) -> Result<ModelManifestResponse, St
 }
 
 #[tauri::command]
+pub fn model_recover(app: tauri::AppHandle) -> Result<ModelStatus, String> {
+    let manager = model_manager(&app)?;
+    manager
+        .recover_download()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn download_model(
     state: State<'_, Mutex<DesktopState>>,
     app: tauri::AppHandle,
@@ -127,21 +135,7 @@ pub fn download_model(
                 state.model_cancel = None;
             }
             match result {
-                Ok(path) => {
-                    let _ = app.emit(
-                        MODEL_PROGRESS_EVENT,
-                        ModelStatus {
-                            model_id: thread_manager.manifest().model_id.clone(),
-                            state: whisperx_worker::ModelState::Ready,
-                            downloaded_bytes: total_bytes,
-                            total_bytes,
-                            percent: 100,
-                            current_asset: None,
-                            install_path: Some(path),
-                            error: None,
-                        },
-                    );
-                }
+                Ok(_) => {}
                 Err(error) => {
                     let _ = app.emit(MODEL_ERROR_EVENT, error.to_string());
                 }
@@ -202,16 +196,18 @@ pub fn create_session(
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let language = language.unwrap_or(LanguageRequest::English);
     let _title = title.unwrap_or_else(|| "Untitled meeting".to_owned());
-    let model_path = model_manager(&app).ok().and_then(|model| {
-        model
-            .validate_installation()
-            .ok()
-            .map(|_| model.installed_path())
-    });
-    let worker_factory = match model_path {
-        Some(path) => DefaultWorkerFactory::default().with_model_path(path),
-        None => DefaultWorkerFactory::default(),
-    };
+    let model = model_manager(&app)?;
+    let model_path = model
+        .validate_installation()
+        .map_err(|_| "download the WhisperX model before recording")
+        .map(|_| model.installed_path())?;
+    let worker_factory = DefaultWorkerFactory::for_resource_root(
+        app.path()
+            .resource_dir()
+            .map_err(|error| error.to_string())?
+            .join("worker"),
+    )
+    .with_model_path(model_path);
     let runtime = MeetingRuntime::with_worker_factory(
         CaptureConfig::dual_source(language.into()),
         Box::new(MacOsCaptureSource::new()),

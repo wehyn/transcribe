@@ -322,7 +322,11 @@ export default function App() {
     let cleanup: (() => void) | undefined;
     let errorCleanup: (() => void) | undefined;
     listenToEvent(UI_EVENTS.modelProgress, (payload) => {
-      if (active && payload && typeof payload === 'object') setModelStatus(payload as ModelStatus);
+      if (active && payload && typeof payload === 'object') {
+        const next = payload as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      }
     }).then((unlisten) => {
       cleanup = unlisten;
     });
@@ -481,20 +485,33 @@ export default function App() {
     setModelStatus((current) => current ? { ...current, state: 'downloading', error: null } : current);
     setError(null);
     try {
-      const value = await invokeAction('download_model');
-      if (value && typeof value === 'object') setModelStatus(value as ModelStatus);
+      await invokeAction('download_model');
     } catch (reason) {
       setError(`Model download failed: ${errorMessage(reason)}`);
       setModelStatus((current) => current ? { ...current, state: 'error', error: errorMessage(reason) } : current);
     } finally {
-      setModelDownloading(false);
+      const status = await invokeOrDemo('model_status').catch(() => undefined);
+      if (status && typeof status === 'object') {
+        const next = status as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      }
+    }
+  };
+
+  const recoverModel = async () => {
+    if (!hasNativeBridge) return;
+    try {
+      const value = await invokeAction('model_recover');
+      if (value && typeof value === 'object') setModelStatus(value as ModelStatus);
+    } catch (reason) {
+      setError(`Could not recover model setup: ${errorMessage(reason)}`);
     }
   };
 
   const cancelModelDownload = async () => {
     try {
       await invokeAction('cancel_model_download');
-      setModelDownloading(false);
     } catch (reason) {
       setError(`Could not cancel model download: ${errorMessage(reason)}`);
     }
@@ -631,7 +648,7 @@ export default function App() {
         </div>
 
         <label className="consent-row"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} disabled={setupLocked || deleted} /><span className="checkmark">✓</span><span>I have consent to record this meeting and understand audio is stored locally.</span></label>
-        <div className="model-setup" aria-live="polite"><div><div className="section-kicker">WHISPERX MODEL</div><strong>{modelStatus?.state === 'ready' ? 'Ready for offline transcription' : modelStatus?.state === 'downloading' ? `Downloading ${modelStatus.current_asset ?? 'model files'}…` : 'Download the local transcription model'}</strong><span>{modelStatus?.state === 'ready' ? 'The model is installed locally. Recording will not download anything.' : `Required once before your first recording${modelManifest ? ` · ${formatBytes(modelManifest.total_bytes)}` : ''}.`}</span></div><div className="model-actions">{!hasNativeBridge ? <span className="model-percent">Desktop app required</span> : modelStatus?.state === 'ready' ? <span className="ready-label"><span className="ready-dot" /> Ready</span> : modelBusy ? <><span className="model-percent">{modelStatus?.percent ?? 0}%</span><button className="source-action" type="button" onClick={cancelModelDownload}>Cancel</button></> : <button className="secondary-button" type="button" onClick={downloadModel}>Download model</button>}</div>{modelBusy && <div className="progress-track model-progress"><span style={{ width: `${modelStatus?.percent ?? 0}%` }} /></div>}{modelStatus?.state === 'error' && <p className="error-note">{modelStatus.error ?? 'The model could not be installed. Retry the download.'}</p>}</div>
+        <div className="model-setup" aria-live="polite"><div><div className="section-kicker">WHISPERX MODEL</div><strong>{modelStatus?.state === 'ready' ? 'Ready for offline transcription' : modelStatus?.state === 'downloading' ? `Downloading ${modelStatus.current_asset ?? 'model files'}…` : 'Download the local transcription model'}</strong><span>{modelStatus?.state === 'ready' ? 'The model is installed locally. Recording will not download anything.' : `Required once before your first recording${modelManifest ? ` · ${formatBytes(modelManifest.total_bytes)}` : ''}.`}</span></div><div className="model-actions">{!hasNativeBridge ? <span className="model-percent">Desktop app required</span> : modelStatus?.state === 'ready' ? <span className="ready-label"><span className="ready-dot" /> Ready</span> : modelBusy ? <><span className="model-percent">{modelStatus?.percent ?? 0}%</span><button className="source-action" type="button" onClick={cancelModelDownload}>Cancel</button><button className="source-action" type="button" onClick={recoverModel}>Recover</button></> : <button className="secondary-button" type="button" onClick={downloadModel}>Download model</button>}</div>{modelBusy && <div className="progress-track model-progress"><span style={{ width: `${modelStatus?.percent ?? 0}%` }} /></div>}{modelStatus?.state === 'error' && <p className="error-note">{modelStatus.error ?? 'The model could not be installed. Retry the download.'}</p>}</div>
 
         <button className="record-button" type="button" disabled={!canRecord || !modelReady} onClick={startRecording}><span className="record-icon" /> {modelReady ? 'Record meeting' : 'Download model to record'}</button>
         <p className="privacy-note"><span>⌁</span> Nothing is captured, processed, or saved before you press Record.</p>

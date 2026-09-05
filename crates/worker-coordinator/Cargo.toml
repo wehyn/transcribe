@@ -18,6 +18,7 @@ name = "whisperx-live-smoke"
 path = "src/bin/whisperx-live-smoke.rs"
 
 [dependencies]
+fs2 = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

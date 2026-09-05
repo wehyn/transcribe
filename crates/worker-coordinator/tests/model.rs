@@ -147,6 +147,30 @@ fn a_partial_asset_is_resumed_with_a_range_request() {
 }
 
 #[test]
+fn an_invalid_full_size_partial_asset_restarts_from_zero() {
+    let assets = [("config.json", br"{}".as_slice())];
+    let source = Arc::new(FakeSource {
+        assets: assets
+            .iter()
+            .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+            .collect(),
+        ranges: Mutex::new(Vec::new()),
+    });
+    let root = tempdir().unwrap();
+    let manager = ModelManager::new(root.path().join("models"), test_manifest(&assets)).unwrap();
+    let partial = root.path().join("models/test-model.partial");
+    std::fs::create_dir_all(&partial).unwrap();
+    std::fs::write(partial.join("config.json.part"), b"xx").unwrap();
+
+    manager
+        .download_with_source(Arc::clone(&source), |_| {})
+        .unwrap();
+
+    assert_eq!(source.ranges.lock().unwrap()[0].1, None);
+    assert_eq!(manager.status().state, ModelState::Ready);
+}
+
+#[test]
 fn a_model_lock_prevents_concurrent_downloads() {
     let assets = [("config.json", br"{}".as_slice())];
     let root = tempdir().unwrap();
@@ -180,4 +204,74 @@ fn symlinked_model_assets_are_not_considered_ready() {
 
     assert_eq!(manager.status().state, ModelState::NotDownloaded);
     assert!(manager.validate_installation().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_model_directory_is_not_followed_during_download() {
+    let assets = [("config.json", br"{}".as_slice())];
+    let root = tempdir().unwrap();
+    let manager = ModelManager::new(root.path().join("models"), test_manifest(&assets)).unwrap();
+    let outside = tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), manager.installed_path()).unwrap();
+    let source = Arc::new(FakeSource {
+        assets: [("config.json".to_owned(), b"{}".to_vec())]
+            .into_iter()
+            .collect(),
+        ranges: Mutex::new(Vec::new()),
+    });
+
+    let result = manager.download_with_source(source, |_| {});
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn model_is_ready_requires_regular_required_assets() {
+    let assets = [
+        ("config.json", br"{}".as_slice()),
+        ("model.bin", b"model".as_slice()),
+        ("preprocessor_config.json", b"preprocessor".as_slice()),
+        ("tokenizer.json", b"tokenizer".as_slice()),
+        ("vocabulary.json", b"vocabulary".as_slice()),
+    ];
+    let root = tempdir().unwrap();
+    let manager = ModelManager::new(root.path().join("models"), test_manifest(&assets)).unwrap();
+    let installed = manager.installed_path();
+    std::fs::create_dir_all(&installed).unwrap();
+    for (path, bytes) in assets {
+        std::fs::write(installed.join(path), bytes).unwrap();
+    }
+
+    assert!(whisperx_worker::model_is_ready(&installed));
+
+    std::fs::remove_file(installed.join("config.json")).unwrap();
+    std::fs::create_dir(installed.join("config.json")).unwrap();
+    assert!(!whisperx_worker::model_is_ready(&installed));
+}
+
+#[test]
+fn completed_downloads_emit_one_ready_terminal_progress_event() {
+    let assets = [("config.json", br"{}".as_slice())];
+    let root = tempdir().unwrap();
+    let manager = ModelManager::new(root.path().join("models"), test_manifest(&assets)).unwrap();
+    let source = Arc::new(FakeSource {
+        assets: [("config.json".to_owned(), b"{}".to_vec())]
+            .into_iter()
+            .collect(),
+        ranges: Mutex::new(Vec::new()),
+    });
+    let mut progress = Vec::new();
+
+    manager
+        .download_with_source(source, |event| progress.push(event))
+        .unwrap();
+
+    assert_eq!(
+        progress
+            .iter()
+            .filter(|event| event.state == ModelState::Ready)
+            .count(),
+        1
+    );
 }
