@@ -107,7 +107,6 @@ pub fn download_model(
 ) -> Result<ModelDownloadResponse, String> {
     let manager = model_manager(&app)?;
     let total_bytes = manager.manifest().total_size();
-    let thread_manager = manager.clone();
     let cancel = ModelManager::cancel_handle();
     {
         let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
@@ -117,6 +116,7 @@ pub fn download_model(
         state.model_root = Some(manager.installed_path());
         state.model_cancel = Some(Arc::clone(&cancel));
     }
+    let thread_manager = manager.clone();
     let thread_result = thread::Builder::new()
         .name("whisperx-model-download".into())
         .spawn(move || {
