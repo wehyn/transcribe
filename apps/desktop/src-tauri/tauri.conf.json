@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Meeting Notes",
+  "version": "0.1.0",
+  "identifier": "com.wehyn.meeting-notes",
+  "build": {
+    "frontendDist": "../../ui/dist",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Meeting Notes",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 860,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "resources": {
+      "../../../crates/worker-coordinator/python/whisperx_worker.py": "worker/whisperx_worker.py",
+      "../../../crates/worker-coordinator/python/requirements-cpu.txt": "worker/requirements-cpu.txt",
+      "../../../crates/worker-coordinator/python/pyproject.toml": "worker/pyproject.toml",
+      "../../../docs/worker-environment.md": "worker/worker-environment.md"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "./Entitlements.plist",
+      "infoPlist": "./Info.plist"
+    }
+  }
+}

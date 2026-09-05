@@ -1,0 +1,26 @@
+[package]
+name = "whisperx-worker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+name = "whisperx_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "whisperx-worker"
+path = "src/bin/whisperx-worker.rs"
+
+[[bin]]
+name = "whisperx-live-smoke"
+path = "src/bin/whisperx-live-smoke.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

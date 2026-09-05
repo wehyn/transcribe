@@ -2,17 +2,17 @@
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
-**Goal:** Build a privacy-conscious meeting assistant that records microphone/system audio, transcribes meetings with WhisperX, produces word-level timestamps and speaker labels, and turns the transcript into editable, searchable notes with summaries and action items.
+**Goal:** Build a privacy-conscious macOS-first meeting assistant that records microphone and system audio, transcribes English, Filipino, and Taglish meetings with WhisperX, produces word-level timestamps and speaker labels, and turns the transcript into editable, searchable notes with live drafts, summaries, and action items.
 
-**Architecture:** Build the application itself as a lightweight local-first Rust desktop app. Rust owns the desktop shell, native audio capture, session state, durable recording, local database, live event delivery, transcript reconciliation, API, and job orchestration. Use Tauri 2 only as a thin desktop shell for the React/TypeScript presentation layer, keeping the UI bundle separate from the application runtime. WhisperX is the only non-Rust runtime exception and remains isolated in a separately pinned Python inference worker because WhisperX and its ML dependencies are Python-based. The Rust app communicates with that worker through a narrow local protocol and keeps the worker lifecycle, model loading, and resource usage controlled. Do not build a Python API/backend, Electron app, or browser-first product. The live path is **open app -> consent -> capture -> incremental WhisperX-backed transcript -> stop -> final WhisperX pass -> notes**.
+**Architecture:** Build the application itself as a lightweight local-first Rust desktop app. Rust owns the desktop shell, native audio capture, session state, durable recording, local database, live event delivery, transcript reconciliation, API, and job orchestration. Use Tauri 2 only as a thin desktop shell for the React/TypeScript presentation layer, keeping the UI bundle separate from the application runtime. WhisperX is the only non-Rust runtime exception and remains isolated in a separately pinned Python inference worker because WhisperX and its ML dependencies are Python-based. The Rust app communicates with that worker through a narrow local protocol and keeps the worker lifecycle, model loading, and resource usage controlled. Do not build a Python API/backend, Electron app, or browser-first product. The live path is **open app -> configure microphone + system audio -> consent -> press Record -> capture -> incremental WhisperX-backed transcript and live notes -> stop -> final WhisperX pass -> final notes**.
 
-**Tech Stack:** Rust stable with a Cargo workspace, Tokio, Axum only for the local in-process API/event layer, SQLx with SQLite, Serde, tracing, and small focused crates for domain/storage/capture/orchestration. Tauri 2 is a thin desktop shell; React/TypeScript is limited to the presentation layer and bundled assets, not the application backend. Native audio capture is implemented behind Rust traits and platform adapters. WhisperX is the only separate runtime: a separately pinned Python 3.10–3.12 inference worker using WhisperX, faster-whisper, forced alignment, and optional pyannote diarization. Store recordings/artifacts on the local filesystem and keep session/job state in SQLite. Use Cargo tests/clippy/fmt plus focused frontend/worker contract tests. Optimize for a small idle footprint, low startup overhead, bounded memory, and no always-running server/database/queue services in the local desktop MVP.
+- **Tech Stack:** Rust stable with a Cargo workspace, Tokio, Axum only for the local in-process API/event layer, SQLx with SQLite, Serde, tracing, and small focused crates for domain/storage/capture/orchestration. Tauri 2 is a thin macOS-first desktop shell; React/TypeScript is limited to the presentation layer and bundled assets, not the application backend. Native macOS audio capture must support microphone plus system audio behind Rust traits and explicit permission/capability adapters. Evaluate ScreenCaptureKit (macOS 13+ system-audio capture) plus CPAL/Core Audio microphone input during the first slice; keep the adapter boundary replaceable until a real signed Tauri build is verified. WhisperX is the only separate runtime: a separately pinned Python 3.10–3.12 inference worker using WhisperX, faster-whisper, forced alignment where language models support it, and optional pyannote diarization. Configure English, Filipino, and Taglish (mixed Tagalog/English) explicitly, with auto-detection and graceful segment-level timing fallback for mixed-language or unsupported alignment cases. Store recordings/artifacts on the local filesystem and keep session/job state in SQLite. Retain raw recordings after finalization by default. Use Cargo tests/clippy/fmt plus focused frontend/worker contract tests. Optimize for a small idle footprint, low startup overhead, bounded memory, and no always-running server/database/queue services in the local desktop MVP.
 
 ## Product scope and decisions
 
 ### MVP acceptance criteria
 
-- User can create a meeting, select microphone/system audio, acknowledge consent, and see a clear **Record** button; no audio device is opened and no audio is processed before the user explicitly presses **Record**.
+- User can create a meeting, select microphone and system audio, choose English, Filipino, or Taglish, acknowledge consent, and see a clear **Record** button; no audio device is opened and no audio is processed before the user explicitly presses **Record**.
 - Pressing **Record** is the sole action that starts capture/listening, creates the active session, and launches the on-demand WhisperX worker. Before that action, the app may show device capability/status only and must not read, buffer, transmit, or persist audio.
 - During recording, captured audio is continuously written to a durable local recording while completed speech windows are sent to the WhisperX worker and incremental transcript updates appear in the UI.
 - Pressing **Pause** stops audio capture and inference immediately; pressing **Resume** explicitly restarts them. Pressing **Stop** closes capture, seals the recording, stops inference, and begins finalization.
@@ -20,30 +20,38 @@
 - The live transcript shows provisional/final status, timestamps, and speaker labels when diarization is available; it remains usable when speaker labels are pending or unavailable.
 - The user can recover from temporary worker/network failures without losing already-captured audio and see actionable health/latency state.
 - When stopped, the system runs a final full-recording WhisperX pass, replacing provisional segments with the best validated transcript and marking any alignment/diarization limitations.
-- Notes include a concise summary, decisions, action items, open questions, and cited transcript time ranges after the final transcript is ready; optionally show a clearly labeled live notes draft during the meeting.
+- During recording, the system maintains a clearly labeled, editable live notes draft from available transcript content. After the final transcript is ready, it generates final notes containing a concise summary, decisions, action items, open questions, and cited transcript time ranges; live drafts are never presented as final.
 - User can review/edit speaker names and transcript text without overwriting the raw recording or raw WhisperX artifacts.
+- Raw recordings are retained locally after finalization by default; finalization must not delete or replace the original recording. User-initiated deletion remains available.
 - User can export transcript/notes as Markdown and JSON; audio export/download is protected by the same authorization as the meeting.
 - Consent, recording status, retention, deletion, live latency, provisional/final state, and model limitations are visible to the user.
-- Automated tests cover pre-record silence, explicit Record gating, pause/resume/stop, capture cleanup, streaming backpressure and reconnects, Rust/Python contracts, normalization, finalization, failure/retry behavior, and the principal UI flow; a real smoke test exercises the gated live chunk path and final WhisperX pass where model/GPU assets are available.
+- Automated tests cover pre-record silence, explicit Record gating, pause/resume/stop, capture cleanup, streaming backpressure and reconnects, Rust/Python contracts, English/Filipino/Taglish configuration and fixtures, live-note updates, normalization, finalization, failure/retry behavior, and the principal UI flow; a real smoke test exercises the gated live chunk path and final WhisperX pass where model/GPU assets are available.
 
 ### Recommended scope boundaries
 
 - The MVP is a live listening application, not an upload-first workflow: the primary path is **open app -> configure source -> acknowledge consent -> press Record -> see incremental transcript -> Pause/Resume or Stop -> finalize**. Audio upload is a secondary recovery/import feature only.
 - **Explicit recording gate:** opening the app, creating a meeting, selecting a device, checking permissions/capabilities, or viewing the dashboard must never activate the microphone, system audio, VAD, recorder, inference worker, or audio buffers. Only the user's deliberate press of **Record** may transition the session into capture.
 - Do not promise zero-latency or native streaming WhisperX. WhisperX's documented API is batch-oriented, so implement low-latency rolling-window inference: capture PCM frames only after Record, use VAD/utterance boundaries, submit short committed windows, display provisional text, and reconcile it with the final full-recording pass.
-- Use a desktop-first Tauri capture path for reliable microphone and system audio. Keep browser `MediaRecorder` as a fallback/demo path, since browser system-audio capture varies by platform and usually requires an explicit share selection.
+- Target macOS first with a Tauri/Rust native capture path for both microphone and system audio, including explicit permission and capability checks. Keep browser `MediaRecorder` as a fallback/demo path rather than the primary capture implementation, since browser system-audio capture varies by platform and usually requires an explicit share selection.
 - Keep the first release single-user and local. Add accounts, team workspaces, calendar integrations, meeting bots, and multi-device sync after the live pipeline is reliable.
 - Keep live diarization optional or explicitly experimental in the first cut. Speaker labels may be assigned after enough context is available and can be corrected during finalization.
 
-### Open decisions to resolve before implementation
+### Resolved product decisions
 
-1. Target desktop platforms and capture scope: microphone only, or microphone plus system audio; define the first supported OS.
-2. Local-only privacy requirement vs hosted multi-user deployment.
-3. Target hardware and latency budget; select the rolling-window model, chunk/overlap duration, VAD, queue depth, and CPU/GPU fallback after measuring on representative meetings.
-4. LLM provider for live/final notes: local model, OpenAI-compatible endpoint, or hosted API; define whether transcript content may leave the machine.
-5. Supported languages and whether live alignment/diarization are enabled by default. Final alignment requires language-specific models; diarization requires pyannote model access.
-6. Retention policy, including whether the raw recording remains after finalization and how pause intervals are handled.
-7. Live transcript policy: how provisional text is visually distinguished, how much rollback/reconciliation is allowed, and whether live notes are MVP or post-meeting only.
+1. **First supported OS:** macOS.
+2. **Capture:** microphone plus system audio, using native Rust/Tauri capture rather than an upload-first or browser-first path. Preserve separate source tracks and a derived mixed track for WhisperX.
+3. **Supported languages:** English, Filipino, and Taglish (mixed Tagalog and English). Taglish is a mixed-language mode, not a promise that every segment can use one language-specific alignment model.
+4. **Raw recordings:** retain the original local recording after finalization by default. Do not automatically delete, compact, or replace it during cleanup; show storage usage/warnings and keep explicit user deletion and export controls.
+5. **Live notes:** included in the MVP as a clearly labeled draft that updates during recording. Final notes are generated separately from the finalized transcript.
+
+### Remaining decisions to resolve before implementation
+
+1. Exact minimum macOS version, signing/notarization requirements, and the native macOS permission flow. The current implementation hypothesis is macOS 13+ with ScreenCaptureKit for system audio and CPAL/Core Audio for microphone input; verify this in the first slice on a real signed Tauri build.
+2. Target hardware and latency budget; select the rolling-window model, chunk/overlap duration, VAD, queue depth, and CPU/GPU fallback after measuring on representative meetings.
+3. LLM provider for live/final notes: local model, OpenAI-compatible endpoint, or hosted API; define whether transcript and live-note content may leave the machine.
+4. Whether live/final diarization is enabled by default, given model access requirements and the quality tradeoff.
+5. Exact raw-recording retention duration, storage warnings, backup behavior, and pause-gap representation while keeping recordings retained by default.
+6. Live-note update cadence, rollback behavior, citation requirements for drafts, and the model/context budget for long meetings.
 
 ## Technical design
 
@@ -61,32 +69,33 @@ Rust is the product runtime and owns the application lifecycle, domain logic, na
 
 ### Live processing pipeline
 
-1. **Capture:** Tauri/Rust capture adapters are constructed and opened only inside the explicit `Record` command handler. Before that command, the app may enumerate capability metadata if needed but must not obtain an audio stream or receive frames. On Record, acquire microphone audio and, where supported, system/loopback audio; convert frames to a known PCM format, timestamp them with a monotonic clock, and fan them out to both the durable recorder and live inference buffer.
+1. **Capture:** Tauri/Rust macOS capture adapters are constructed and opened only inside the explicit `Record` command handler. Before that command, the app may enumerate capability metadata if needed but must not obtain an audio stream or receive frames. On Record, acquire microphone audio through CPAL/Core Audio and system audio through the verified ScreenCaptureKit adapter; convert frames to a known PCM format, timestamp them with a monotonic clock, and fan them out to both the durable recorder and live inference buffer. If macOS permission or system-audio capability is unavailable, fail before opening the other capture path unless the user explicitly chooses a supported fallback.
 2. **Durable recording:** Rust appends each accepted frame only after Record succeeds to a crash-safe temporary recording, periodically flushes it, and atomically seals it on Stop. Capture failures must not silently produce a partial meeting; surface dropped-frame counts and recoverable errors.
 3. **Voice activity and utterance windows:** A Rust VAD component starts only after Record and stops on Pause/Stop/error. It detects speech boundaries, maintains a bounded overlap, and emits committed utterance windows rather than arbitrary fixed slices.
-4. **Live WhisperX transcription:** The Rust coordinator starts the WhisperX worker only after Record, keeps the model warm for the active session, and sends committed windows to it. The worker returns `provisional` or `committed` results with a session sequence number.
+4. **Language-aware live WhisperX transcription:** The Rust coordinator starts the WhisperX worker only after Record, keeps the model warm for the active session, and sends committed windows with the selected language mode. English and Filipino use the configured language path when supported; Taglish uses mixed-language/automatic detection and must preserve usable segment timestamps when word alignment cannot cover the whole window. The worker returns `provisional` or `committed` results with a session sequence number and language metadata.
 5. **Incremental reconciliation:** Rust deduplicates results by session/window sequence, tracks acknowledged audio offsets, and replaces the provisional tail when a newer overlapping window arrives. The UI labels provisional text and tolerates corrections. Persist live segments separately from final transcript versions.
-6. **Live events:** Axum exposes a local WebSocket or SSE stream for transcript deltas, capture health, latency, queue depth, and worker errors. The event stream may be connected before Record for UI status, but it must never carry audio or cause capture; reconnects replay events from a session cursor.
-7. **Optional live speakers:** Do not block live transcription on diarization. If enabled, send sufficiently long committed windows to the WhisperX diarization stage and update speaker labels asynchronously; final speaker assignment occurs during finalization.
-8. **Finalization:** On Stop, close capture first, seal the recording, terminate or hand off the worker according to the session lifecycle, and run one full-recording WhisperX pass with alignment and optional diarization. Rust validates and stores the final version, reconciles/removes provisional segments, and only then generates final cited notes.
-9. **No implicit restart:** If the app closes, permission is revoked, capture fails, or the worker crashes, Rust transitions the session to a stopped/recoverable/error state and does not reopen devices or restart listening without another explicit Record action.
+6. **Live notes:** A bounded, debounced notes job consumes the current reconciled transcript during recording and updates an explicitly labeled editable live-note draft. Draft summaries, decisions, action items, and open questions may cite provisional time ranges, must show their draft status, and must never overwrite final notes or raw artifacts. If the notes provider is unavailable, live transcription continues and the draft shows its health state.
+7. **Live events:** Axum exposes a local WebSocket or SSE stream for transcript deltas, live-note updates, capture health, latency, queue depth, and worker errors. The event stream may be connected before Record for UI status, but it must never carry audio or cause capture; reconnects replay events from a session cursor.
+8. **Optional live speakers:** Do not block live transcription or live notes on diarization. If enabled, send sufficiently long committed windows to the WhisperX diarization stage and update speaker labels asynchronously; final speaker assignment occurs during finalization.
+9. **Finalization:** On Stop, close capture first, seal the recording, retain the immutable raw recording, terminate or hand off the worker according to the session lifecycle, and run one full-recording WhisperX pass with alignment and optional diarization. Rust validates and stores the final version, reconciles/removes provisional segments, and generates final cited notes separately from the live draft.
+10. **No implicit restart:** If the app closes, permission is revoked, capture fails, or the worker crashes, Rust transitions the session to a stopped/recoverable/error state and does not reopen devices or restart listening without another explicit Record action.
 
 ### Core entities
 
 - `Meeting`: id, owner_id (nullable for local MVP), title, status, started_at, ended_at, language, created_at, deleted_at.
 - `LiveSession`: id, meeting_id, status, capture_config_json, audio_format_json, started_at, paused_at, stopped_at, last_audio_offset_ms, last_event_sequence, dropped_frames, created_at.
-- `Recording`: id, meeting_id, live_session_id, storage_key, original_filename, mime_type, byte_size, duration_seconds, sha256, capture_source, created_at, sealed_at.
+- `Recording`: id, meeting_id, live_session_id, storage_key, original_filename, mime_type, byte_size, duration_seconds, sha256, capture_source, track_role (`microphone|system|mixed|raw_bundle`), retained, created_at, sealed_at.
 - `AudioWindow`: id, live_session_id, sequence, start_offset_ms, end_offset_ms, storage_key, status, submitted_at, completed_at, retry_count.
 - `ProcessingJob`: id, meeting_id, recording_id, live_session_id, type, status, attempts, progress, error_code, error_message, worker_version, started_at, finished_at.
 - `TranscriptVersion`: id, meeting_id, recording_id, status, provisional, language, raw_artifact_key, config_json, model_metadata_json, created_at.
 - `TranscriptSegment`: id, transcript_version_id, live_session_id, window_sequence, ordinal, start_seconds, end_seconds, text, segment_status, speaker_id, confidence, edited_text.
 - `TranscriptWord`: id, segment_id, ordinal, start_seconds, end_seconds, word, confidence, speaker_id.
 - `Speaker`: id, transcript_version_id, stable_label, display_name, color.
-- `NoteVersion`: id, meeting_id, transcript_version_id, status, summary, decisions_json, action_items_json, open_questions_json, model_metadata_json, created_at, edited_at.
+- `NoteVersion`: id, meeting_id, transcript_version_id, status, provisional, summary, decisions_json, action_items_json, open_questions_json, model_metadata_json, created_at, edited_at.
 - `NoteCitation`: id, note_version_id, section, item_index, segment_start, segment_end, quote.
 - `LiveEvent`: id, live_session_id, sequence, event_type, payload_json, created_at.
 
-Use immutable recording and processing versions and separate editable fields/overlays. Live windows/events are session-scoped and deduplicated by `(live_session_id, sequence)`. Deletion must cascade or tombstone all associated audio, raw artifacts, normalized records, notes, live events, and job logs according to the retention policy.
+Use immutable recording and processing versions and separate editable fields/overlays. Live windows/events are session-scoped and deduplicated by `(live_session_id, sequence)`. Raw recordings remain immutable and retained after finalization by default; storage cleanup must not remove them unless the user explicitly deletes the meeting or recording. Deletion must cascade or tombstone all associated audio, raw artifacts, normalized records, notes, live events, and job logs, and verify filesystem cleanup.
 
 ### API shape
 
@@ -101,7 +110,7 @@ Use immutable recording and processing versions and separate editable fields/ove
 - `GET /api/jobs/:id` — finalization or recovery job status/progress/error.
 - `GET /api/meetings/:id/transcript?version=live|final` — live provisional or final normalized transcript with pagination/search parameters.
 - `PATCH /api/transcript-segments/:id` — edit final text/speaker display name overlay; retain audit metadata.
-- `GET /api/meetings/:id/notes` and `PATCH /api/meetings/:id/notes` — retrieve/edit generated notes.
+- `GET /api/meetings/:id/notes?version=live|final` and `PATCH /api/meetings/:id/notes` — retrieve/edit the live draft or final generated notes; edits remain separate from generated versions.
 - `POST /api/meetings/:id/notes/regenerate` — enqueue bounded regeneration from a selected final transcript version.
 - `GET /api/meetings/:id/export?format=markdown|json` — export editable transcript and notes.
 - `DELETE /api/meetings/:id` — request deletion and verify storage cleanup.
@@ -113,9 +122,9 @@ Every endpoint must authorize against the meeting owner/workspace, validate IDs 
 1. **Dashboard:** meeting list, search/filter, live/processing/ready status, duration, last updated, and prominent `New meeting`/`Record` CTA. Loading this screen opens no audio devices.
 2. **New meeting:** title, microphone/system audio source selection, consent acknowledgement, language/model/diarization options, and a capability check that reads metadata only. The primary action is a clearly labeled **Record** button; upload is secondary recovery/import.
 3. **Pre-record state:** show selected source and permissions/capabilities without an active stream, timer, VAD, audio meter, recorder, or WhisperX worker.
-4. **Live meeting view:** after **Record** is pressed, show a prominent recording indicator, elapsed timer, pause/resume/stop, current audio source/level, live transcript with provisional styling, latency/connection state, speaker labels when available, and recovery messaging.
+4. **Live meeting view:** after **Record** is pressed, show a prominent recording indicator, elapsed timer, pause/resume/stop, current microphone/system-audio source and level, live transcript with provisional styling, an editable live-notes draft with draft citations/status, latency/connection state, speaker labels when available, and recovery messaging.
 5. **Finalization view:** stage-level progress (seal, transcribe, align, diarize, reconcile, notes), live transcript retained while final processing runs, retry action, and actionable failure text.
-6. **Meeting workspace:** final notes/transcript/audio player in a responsive split view; clicking a citation seeks playback; transcript search and speaker filter; edit controls; export/delete.
+6. **Meeting workspace:** retained raw recording, final notes/transcript/audio player in a responsive split view; clicking a citation seeks playback; transcript search and speaker filter; edit controls; export/delete. Live drafts remain distinguishable from final notes.
 7. **Settings:** capture permissions, model/latency defaults, storage/retention, privacy/provider status, hardware diagnostics, and Hugging Face token setup instructions without displaying the token.
 
 Accessibility requirements: keyboard-accessible **Record**, **Pause**, **Resume**, and **Stop** controls, visible focus, status announcements for recording/pause/stop/reconnect/finalization, captions/transcript readable without color alone, a non-color recording indicator, and confirmation before destructive deletion.
@@ -154,8 +163,8 @@ Each implementation task follows strict TDD: write one focused failing test, run
 2. Add the small React/TypeScript UI shell and Tauri 2 configuration; keep all application logic in Rust.
 3. Add the Python worker directory with a locked Python 3.10–3.12 environment and protocol-only contract; do not add a Python API/backend.
 4. Pin Rust, Node, Python, and the WhisperX/PyTorch/CUDA worker image strategy; document the on-demand worker lifecycle and model cache.
-5. Add `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, frontend checks, and worker contract checks.
-6. Verify the Rust app compiles, the Tauri shell launches, the worker contract passes without loading models, and no worker/server/database/queue process starts before an explicit meeting start.
+5. Add `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, frontend checks, and worker contract checks, including language-mode cases.
+6. Verify the macOS Tauri app compiles/launches, the worker contract passes without loading models, and no worker/server/database/queue process starts before an explicit Record action.
 7. Commit: `chore: scaffold lightweight rust meeting assistant workspace`.
 
 ### Task 2: Define Rust domain types, schema, and lifecycle states
@@ -175,12 +184,12 @@ Each implementation task follows strict TDD: write one focused failing test, run
 4. Run `cargo test -p domain` and apply migrations against a disposable SQLite database.
 5. Commit: `feat: define rust meeting processing domain`.
 
-### Task 3: Implement Rust live capture, durable recording, and explicit Record gating
+### Task 3: Implement Rust macOS live capture, durable recording, and explicit Record gating
 
-**Objective:** Capture the meeting only after the user presses **Record**, continuously persist audio, and expose a recoverable session state machine.
+**Objective:** Capture macOS microphone and system audio only after the user presses **Record**, continuously persist the raw recording, and expose a recoverable session state machine.
 
 **Files:**
-- Create: `crates/capture/src/lib.rs`, `source.rs`, `pcm.rs`, `vad.rs`
+- Create: `crates/capture/src/lib.rs`, `source.rs`, `pcm.rs`, `vad.rs`, `macos.rs`
 - Create: `apps/desktop/src-tauri/src/capture.rs`, `commands.rs`
 - Create: `crates/application/src/live_sessions.rs`, `recordings.rs`
 - Create: `crates/storage/src/artifact_store.rs`, `local.rs`, `hash.rs`
@@ -190,10 +199,10 @@ Each implementation task follows strict TDD: write one focused failing test, run
 1. Write tests first for the hard privacy gate: creating a meeting, selecting a source, capability checks, opening the pre-record screen, and subscribing to events must produce zero capture calls, frames, audio buffers, recordings, worker starts, or persisted audio.
 2. Test that only an explicit Record command can transition (`created -> starting -> listening`), and that consent is required; test Pause/Resume/Stop, invalid transitions, and recovery after temporary device errors.
 3. Test PCM format conversion, monotonic offsets, dropped-frame accounting, bounded buffers, pause behavior, and cleanup after close/permission revocation/errors.
-4. Implement a `CaptureSource` trait with adapters constructed/opened only inside the Record handler; capability inspection must be metadata-only and must not open/sample an audio device.
+4. Implement a `CaptureSource` trait with macOS microphone and ScreenCaptureKit system-audio adapters constructed/opened only inside the Record handler; capability inspection must be metadata-only and must not open/sample an audio device.
 5. Implement a crash-safe append-only recording writer that starts only after capture succeeds, periodically flushes/checkpoints, and atomically seals on Stop.
-6. Implement Rust/Tauri commands for metadata-only capability check, explicit Record/start, Pause, Resume, Stop, audio-level health only while recording, and session recovery without automatic restart.
-7. Run capture/application tests and a manual short microphone capture; verify no device/worker activity before pressing Record; commit: `feat: add rust live capture sessions with explicit record gate`.
+6. Implement Rust/Tauri commands for metadata-only macOS capability checks, explicit Record/start, Pause, Resume, Stop, audio-level health only while recording, and session recovery without automatic restart.
+7. Run capture/application tests and a manual short microphone-plus-system-audio capture on macOS 13+; verify no device/worker activity before pressing Record, verify both source tracks and the mixed derivative, and verify the raw recording remains after finalization; commit: `feat: add rust macos live capture sessions with explicit record gate`.
 
 ### Task 4: Add the Rust live-window/VAD pipeline and backpressure control
 
@@ -208,7 +217,7 @@ Each implementation task follows strict TDD: write one focused failing test, run
 **Steps:**
 1. Test that the VAD/windowing pipeline remains completely idle before Record and after Pause/Stop/error; no frames may enter its buffers before an active capture session exists.
 2. Test speech start/end detection, silence trimming, overlap handling, sequence numbering, pause gaps, and bounded queue behavior after Record.
-3. Implement VAD/windowing with small bounded buffers and configurable frame size, minimum speech duration, maximum window duration, overlap, and queue capacity. Prefer a lightweight Rust VAD implementation or isolate VAD independently from the Python WhisperX worker.
+3. Implement VAD/windowing with small bounded buffers and configurable frame size, minimum speech duration, maximum window duration, overlap, and queue capacity. Preserve separate microphone/system-audio source metadata where the macOS adapter provides it. Prefer a lightweight Rust VAD implementation or isolate VAD independently from the Python WhisperX worker.
 4. Persist accepted window metadata and audio artifacts before submission; use `(session_id, sequence)` as the idempotency key.
 5. Drop or defer inference windows under load according to an explicit policy and surface latency, queue depth, and dropped-window status to the UI; never silently lose audio from the durable recording.
 6. Run deterministic PCM fixture tests and a real microphone windowing smoke test; commit: `feat: add lightweight live audio windows and backpressure`.
@@ -243,15 +252,15 @@ Each implementation task follows strict TDD: write one focused failing test, run
 
 **Steps:**
 1. Write Python protocol tests and Rust coordinator tests first for pre-Record non-start behavior, explicit worker startup, long-lived worker health, protocol versioning, manifest validation, window sequence/offsets, device/compute/batch configuration, timeouts, malformed output, and error mapping; run them red.
-2. Implement a long-lived JSON-lines or HTTP worker contract: Rust sends window PCM/artifact reference, absolute offsets, overlap, model settings, and sequence; Python returns provisional/committed text, relative timestamps, model metadata, and structured errors.
-3. Keep WhisperX imports inside the Python worker; load the configured small/fast model once per process after Record starts and call WhisperX transcription for each bounded window. This is a rolling-window compatibility layer around WhisperX's batch API, not a claim that WhisperX natively streams.
+2. Implement a long-lived JSON-lines or HTTP worker contract: Rust sends window PCM/artifact reference, absolute offsets, overlap, selected language mode (`en`, `fil`, or `taglish`), model settings, and sequence; Python returns provisional/committed text, relative timestamps, detected language metadata, model metadata, and structured errors.
+3. Keep WhisperX imports inside the Python worker; load the configured small/fast model once per process after Record starts and call WhisperX transcription for each bounded window. Implement English, Filipino, and Taglish configuration, and return an explicit alignment status when mixed-language output cannot be fully aligned. This is a rolling-window compatibility layer around WhisperX's batch API, not a claim that WhisperX natively streams.
 4. Implement Rust process supervision, warm-worker health, bounded concurrency, ordering/deduplication, timeout/restart behavior, cancellation, and artifact verification. A crash/restart must not automatically reopen capture or resume listening.
-5. Add a real live smoke command that proves no worker starts before Record, then captures/reads short sequential windows only after Record, loads WhisperX once, processes windows through the Rust coordinator, and reports measured first-result and steady-state latency.
+5. Add a real live smoke command that proves no worker starts before Record, then captures/reads short sequential windows only after Record, loads WhisperX once, processes English/Filipino/Taglish windows through the Rust coordinator, and reports measured first-result and steady-state latency.
 6. Pin dependencies and record exact tested versions/device in the lockfiles and README.
 7. Run Rust/Python contract tests and the gated live smoke test on the available worker profile; commit: `feat: stream live windows through whisperx after record`.
 ### Task 7: Add live transcript reconciliation and final WhisperX processing
 
-**Objective:** Show responsive provisional transcript text during capture and produce an authoritative aligned/diarized final version after stop.
+**Objective:** Show responsive provisional transcript text and live-note drafts during capture, then produce an authoritative aligned/diarized final version and final notes after stop.
 
 **Files:**
 - Create: `crates/application/src/live_transcript.rs`, `finalization.rs`
@@ -265,7 +274,7 @@ Each implementation task follows strict TDD: write one focused failing test, run
 1. Test Rust reconciliation of overlapping windows, provisional-tail replacement, duplicate/out-of-order results, absolute timestamp conversion, gaps, and final-version replacement.
 2. Implement live segment persistence/events separately from immutable final transcript versions; label provisional vs committed text and retain source window references.
 3. On stop, seal the audio and run the full recording through WhisperX transcription, `whisperx.load_align_model`/`whisperx.align`, and optional diarization/`whisperx.assign_word_speakers`.
-4. Normalize and validate the final output in Rust, preserve raw JSON, mark partial alignment/diarization limitations, and generate notes only from the final version.
+4. Normalize and validate the final output in Rust, preserve raw JSON and the retained recording reference, mark partial language/alignment/diarization limitations, and generate final notes only from the final version while keeping the live draft separate.
 5. Run deterministic reconciliation tests and a real finalization smoke test; commit: `feat: finalize live meetings with whisperx alignment`.
 
 ### Task 8: Add optional live speaker diarization and Rust speaker editing
@@ -289,26 +298,26 @@ Each implementation task follows strict TDD: write one focused failing test, run
 
 ### Task 9: Implement the live meeting UI and final transcript workspace
 
-**Objective:** Let a user start a live meeting, monitor incremental transcript updates, control capture, and review the finalized transcript.
+**Objective:** Let a user start a macOS microphone-plus-system-audio meeting, monitor incremental transcript and live-note updates, control capture, and review the finalized transcript/notes alongside the retained recording.
 
 **Files:**
 - Create: `apps/web/src/routes/home.tsx`, `routes/new-meeting.tsx`, `routes/live-meeting.tsx`, `routes/meeting.tsx`
-- Create: `apps/web/src/components/Recorder.tsx`, `LiveTranscript.tsx`, `MeetingStatus.tsx`, `ProcessingProgress.tsx`, `Transcript.tsx`, `AudioPlayer.tsx`, `SpeakerEditor.tsx`
+- Create: `apps/web/src/components/Recorder.tsx`, `LiveTranscript.tsx`, `LiveNotes.tsx`, `MeetingStatus.tsx`, `ProcessingProgress.tsx`, `Transcript.tsx`, `AudioPlayer.tsx`, `SpeakerEditor.tsx`
 - Create: `apps/web/tests/live-meeting.spec.ts`, `meeting-workspace.spec.ts`
 - Modify: `apps/desktop/src-tauri/src/commands.rs` and capture adapters if desktop capture is selected
 
 **Steps:**
 1. Test live UI state transitions for permission denied, unsupported capture, start/pause/resume/stop, event reconnect, stale cursor, worker latency, and processing failure.
-2. Implement the live meeting screen with explicit consent, recording indicator, elapsed timer, source/level status, provisional transcript styling, live latency/connection state, and keyboard-accessible controls.
+2. Implement the live meeting screen with explicit consent, recording indicator, elapsed timer, microphone/system-audio source and level status, language mode, provisional transcript styling, editable live-note draft, live latency/connection state, and keyboard-accessible controls.
 3. Subscribe to Axum WebSocket/SSE events with cursor replay; apply sequence-aware transcript reconciliation without duplicate lines.
-4. Render finalization progress while retaining the live transcript; switch to the authoritative final transcript and notes when ready.
+4. Render finalization progress while retaining the live transcript, live-note draft, and raw recording; switch to the authoritative final transcript and final notes when ready without deleting the draft or recording.
 5. Add final transcript search/editing, speaker naming, playback seeking, and safe rendering.
 6. Use Playwright to verify the main flow: create -> consent -> start -> receive transcript deltas -> pause/resume -> stop -> finalization -> final transcript.
 7. Commit: `feat: add live meeting and transcript workspace`.
 
 ### Task 10: Generate structured AI notes from the finalized live transcript
 
-**Objective:** Convert the final WhisperX transcript into validated, editable notes that link claims to source time ranges.
+**Objective:** Maintain editable live-note drafts during recording and convert the final WhisperX transcript into validated final notes that link claims to source time ranges.
 
 **Files:**
 - Create: `crates/application/src/notes.rs`, `llm.rs`
@@ -319,9 +328,9 @@ Each implementation task follows strict TDD: write one focused failing test, run
 - Create: `crates/api/tests/notes.rs`
 
 **Steps:**
-1. Test that note generation is triggered only for a finalized transcript, not provisional live segments; also test prompt length limits, structured JSON validation, malformed output repair/retry, empty transcript handling, and citation range validation in Rust.
+1. Test debounced live-note generation from reconciled provisional/committed transcript content, final-note generation only from a finalized transcript, draft/final separation, prompt length limits, structured JSON validation, malformed output repair/retry, empty transcript handling, and citation range validation in Rust.
 2. Implement an `LlmProvider` trait with one configured OpenAI-compatible/local provider and a deterministic fake for tests; require the model to separate observed facts from inferred suggestions.
-3. Store notes as a version tied to the final transcript and keep user edits separate from generated output. If live note drafts are included, label them as provisional and never export them as final notes.
+3. Store live notes as a provisional session/meeting version and final notes as a version tied to the final transcript; keep user edits separate from generated output. Label live drafts clearly and never export them as final notes unless the user explicitly chooses a draft export.
 4. Add regenerate endpoint with idempotency and bounded retries; do not log full transcript/prompt by default.
 5. Run Rust tests with the fake provider and an opt-in live-provider smoke test; commit: `feat: generate cited notes from live meetings`.
 
@@ -339,7 +348,7 @@ Each implementation task follows strict TDD: write one focused failing test, run
 1. Test that the dashboard, new-meeting screen, source selection, capability check, event connection, and pre-record screen never request audio permission, open an audio device, create frames, start VAD, launch WhisperX, or persist audio.
 2. Test that clicking **Record** is the sole path to start capture/processing; test consent, explicit **Pause**, **Resume**, and **Stop**, plus event reconnect, stale cursor, worker latency, and processing failure.
 3. Implement the pre-record screen with a clearly labeled **Record** button, metadata-only capability state, consent acknowledgement, and no active audio meter/timer/buffer.
-4. Implement the Tauri/Rust capture path for desktop microphone/system audio where supported; keep browser MediaRecorder as a fallback/demo path and retain explicit consent acknowledgement.
+4. Implement the Tauri/Rust macOS capture path for microphone plus system audio where supported; keep browser MediaRecorder as a fallback/demo path and retain explicit consent acknowledgement.
 5. Render live transcript deltas, provisional styling, capture health, queue depth, latency, reconnect state, and finalization progress from Axum WebSocket/SSE events.
 6. Ensure already-captured audio remains recoverable if the worker fails; expose retry/restart actions without restarting capture unless the user presses **Record** again.
 7. Run Playwright with mocked capture/events and a manual desktop test with a real short live meeting; commit: `feat: add rust live meeting flow with explicit record gate`.
@@ -386,9 +395,9 @@ Each implementation task follows strict TDD: write one focused failing test, run
 - Create: `tests/e2e/live-meeting.spec.ts`
 
 **Steps:**
-1. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, frontend typecheck/lint/unit tests, Python protocol tests, and Playwright tests.
+1. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, frontend typecheck/lint/unit tests, Python protocol tests, and Playwright tests, including English, Filipino, Taglish, live-note, and raw-recording-retention cases.
 2. Run a real gated live smoke test through the Rust coordinator: prove no audio device/frames/VAD/worker activity before Record; press Record, capture sequential windows, keep WhisperX warm, measure first-result and steady-state latency, verify event sequencing/reconnect; press Stop, then run the final full-recording WhisperX alignment pass.
-3. Verify the full primary flow: create -> configure without listening -> consent -> press Record -> live transcript deltas -> Pause/Resume -> reconnect -> Stop -> seal -> final WhisperX transcript -> notes -> edit -> export -> delete.
+3. Verify the full primary flow: create -> configure macOS microphone/system audio without listening -> choose English/Filipino/Taglish -> consent -> press Record -> live transcript and live-note deltas -> Pause/Resume -> reconnect -> Stop -> seal and retain raw recording -> final WhisperX transcript -> final notes -> edit -> export -> delete.
 4. Check that worker failure does not lose durable audio, recovery does not duplicate segments, finalization supersedes provisional text, a capture error does not auto-restart listening, accessibility works, and hostile Markdown/HTML is safely rendered.
 5. Document unsupported capture platforms, rolling-window latency and accuracy tradeoffs, alignment/diarization limitations, model requirements, protocol version, and skipped checks with reasons.
 6. Commit: `test: verify explicit-record live rust whisperx flow`.
@@ -426,19 +435,79 @@ The live smoke test must report first-result latency, steady-state latency, queu
 
 ## Risks and mitigations
 
-- **Capture limitations:** Browser system-audio APIs vary by browser/OS and can omit audio. Make the MVP desktop-first with an explicit Tauri/Rust capability check, microphone support, and platform-specific loopback adapters; retain browser capture/upload only as fallback paths.
+- **macOS capture limitations:** System-audio capture depends on the selected native macOS API and user-granted permissions. Make microphone plus system audio the first-class path, expose capability/permission failures before Record, and retain browser capture/upload only as fallback paths.
 - **WhisperX streaming limitation:** WhisperX's primary API is batch-oriented, not native streaming. Use warm rolling-window inference for live feedback and a final full-recording pass for authoritative output. Clearly label provisional text and measure the actual latency/accuracy tradeoff.
 - **Live audio reliability:** A worker outage or queue overload must not lose the durable recording. Separate the capture/write path from inference, bound memory, checkpoint to disk, expose dropped-window metrics, and allow replay of unprocessed windows.
 - **WhisperX compatibility:** Rust should not try to reimplement WhisperX or embed its Python dependency graph. Python, Torch, CUDA, CTranslate2, PyAV, and pyannote versions are coupled; isolate, pin, and test the worker image plus its Rust/Python protocol.
 - **Rust/Python boundary failures:** Treat timeouts, worker crashes, malformed JSON, protocol mismatches, and missing artifacts as typed session/job failures; use protocol versioning, bounded output, retries only for transient errors, and fixture-based contract tests.
 - **VRAM and latency:** Large models may exceed available memory. Use a small/fast live model, explicit device/compute settings, bounded windows/concurrency, model cache, CPU fallback, and report measured first-result/steady-state latency.
-- **Alignment gaps:** Unsupported languages or dictionary-missing tokens may lack word timestamps. Preserve segment-level timings and label partial alignment.
+- **Language/alignment gaps:** English, Filipino, and especially mixed Taglish may not have complete language-specific forced-alignment coverage. Preserve segment-level timings, return alignment status per segment/version, and label partial alignment rather than blocking transcription.
 - **Diarization quality:** Overlapping speech and imperfect speaker clustering are known limitations. Do not block live transcription on diarization; allow corrections and use final-pass diarization for authoritative labels.
 - **Privacy/legal:** Obtain explicit consent appropriate to jurisdiction, show recording state to participants where required, protect artifacts, and make deletion meaningful.
 - **LLM hallucination:** Generate final notes only from the finalized transcript; enforce structured output, source citations, confidence/unknown markers, and editable notes.
-- **Long meetings:** Append audio incrementally, checkpoint live windows, bound transcript/event history, and make final processing resumable.
+- **Long meetings and retained audio:** Append audio incrementally, checkpoint live windows, bound transcript/event history, show disk-usage warnings, retain the raw recording by default, and make final processing resumable.
 - **Untrusted model output:** Escape UI rendering and validate exports to prevent stored XSS or malicious links.
+
+## Vertical slicing execution order
+
+Implement the MVP as thin end-to-end slices rather than completing each technical layer in isolation. Each slice must leave the app runnable and must follow the TDD red-green-refactor cycle.
+
+### Vertical slice 1: macOS capture and retained recording
+
+**User outcome:** Create a meeting, choose microphone plus system audio, acknowledge consent, press **Record**, capture a short meeting, press **Stop**, and find the retained raw recording locally. Before **Record**, the app must remain completely silent.
+
+**Includes:** Rust/Tauri shell, macOS permission/capability checks, explicit Record/Pause/Resume/Stop state machine, separate microphone/system-audio capture tracks, a derived mixed PCM stream for future WhisperX input, crash-safe local recording, SQLite session metadata, no WhisperX/notes dependency yet, and the initial UI shell in `apps/desktop/ui/`.
+
+**Implementation status:** The cross-platform Rust core, retained recording bundle, macOS adapter boundary, Tauri-facing state surface, thin React UI shell, rolling-window coordinator, versioned JSON-lines worker boundary, transcript reconciliation, final WAV materialization, durable local JSON session metadata, verified export/deletion, notes generation, and macOS packaging metadata are implemented. Native ScreenCaptureKit callbacks, real macOS permission testing, actual model-backed WhisperX inference, and signed notarized packaging remain host-dependent validation work.
+
+**Acceptance checks:**
+
+1. Opening the app, creating a meeting, checking capabilities, and connecting to status events performs zero capture, audio buffering, audio persistence, or worker startup.
+2. Only **Record** opens the selected microphone and system-audio streams.
+3. **Pause** stops capture; **Resume** explicitly reopens it; **Stop** closes streams and seals the recording.
+4. Closing the app, permission revocation, or capture error never restarts listening automatically.
+5. Separate source tracks and the mixed derivative have valid duration/format metadata, and the original recording remains after finalization.
+
+**Likely commit:** `feat: add macos record-gated capture slice`
+
+### Vertical slice 2: live WhisperX transcript
+
+**User outcome:** During an active macOS microphone-plus-system-audio recording, see incremental English, Filipino, or Taglish transcript text while separate source tracks, a mixed derivative, and the raw recording continue to be retained.
+
+**Includes:** Rust PCM/VAD/windowing over the mixed derivative, bounded backpressure, on-demand Python WhisperX worker, versioned JSON-lines protocol, warm model lifecycle, provisional transcript reconciliation, local events, measured latency, and final full-recording WhisperX transcription on Stop.
+
+**Acceptance checks:** No worker or audio processing before Record; sequential windows produce deduplicated live results; worker failure does not lose audio; final output supersedes provisional text; language/alignment limitations are visible.
+
+**Likely commit:** `feat: add live whisperx transcript slice`
+
+### Vertical slice 3: live and final notes
+
+**User outcome:** See an editable **Draft** notes panel during recording, then receive final cited notes after the final WhisperX transcript is ready.
+
+**Includes:** Debounced notes updates, summary/decisions/action-items/open-questions schema, provisional citations, final-note regeneration from the authoritative transcript, provider abstraction, local/privacy disclosure, and draft/final separation.
+
+**Acceptance checks:** Live notes update without blocking capture; unavailable notes provider does not stop transcription; draft notes are visibly non-final; final notes cite valid transcript ranges and do not overwrite the retained raw recording.
+
+**Likely commit:** `feat: add live and final notes slice`
+
+### Vertical slice 4: review, export, and deletion
+
+**User outcome:** Review the retained recording, transcript, and notes; edit overlays; export Markdown/JSON; and explicitly delete all meeting data.
+
+**Includes:** Final workspace, audio playback, citation seeking, transcript/speaker editing, safe rendering, exports, storage warnings, retention settings, and verified deletion.
+
+**Acceptance checks:** Raw and generated artifacts remain distinct; exports reflect edits and versions; deletion removes database records and filesystem artifacts only after explicit confirmation; no secrets or untrusted markup leak.
+
+**Likely commit:** `feat: add meeting review export and deletion slice`
+
+### Vertical slice 5: macOS packaging and acceptance hardening
+
+**User outcome:** Install and run the complete assistant on the supported macOS target with predictable permissions, worker setup, and diagnostics.
+
+**Includes:** Apple signing/notarization path, minimum macOS documentation, WhisperX environment/version pinning, model setup, CPU/Apple Silicon measurements, permission recovery, disk warnings, accessibility, and end-to-end test evidence.
+
+**Acceptance checks:** The complete flow works on a clean supported macOS installation; no implicit listening occurs; capture, worker, live notes, finalization, raw-recording retention, export, and deletion are all verified.
 
 ## Handoff
 
-Plan updated at `.hermes/plans/2026-09-04_122410-ai-meeting-assistant.md`. The privacy rule is explicit: **the app only listens after the user presses Record**. Before that, it may display metadata-only device capabilities, but it must not open or sample audio devices, request/use an active audio stream, buffer frames, run VAD, start WhisperX, or persist audio. Pause, Stop, errors, permission revocation, and app close all stop listening, and capture never restarts automatically. Rust remains the lightweight application runtime; WhisperX starts on demand only after Record.
+The first execution target is **Vertical slice 1: macOS capture and retained recording**. Product decisions include **macOS first**, **microphone plus system audio with separate source tracks and a mixed derivative**, **English/Filipino/Taglish**, **raw recordings retained locally after finalization by default**, and **live notes included in the MVP as an editable draft**. The privacy rule remains explicit: **the app only listens after the user presses Record**. Before that, it may display metadata-only device capabilities, but it must not open or sample audio devices, request/use an active audio stream, buffer frames, run VAD, start WhisperX, or persist audio. Pause, Stop, errors, permission revocation, and app close all stop listening, and capture never restarts automatically. The current macOS capture hypothesis is ScreenCaptureKit for system audio plus CPAL/Core Audio for microphone input, to be verified in a real signed Tauri build. Implementation will begin with a cross-platform Rust core and macOS-gated adapters; native macOS execution remains a separate verification step because this Linux host has no `rustc`/`cargo` and cannot exercise macOS permissions.

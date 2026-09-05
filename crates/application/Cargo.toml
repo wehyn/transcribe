@@ -1,0 +1,17 @@
+[package]
+name = "meeting-application"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+meeting-domain = { path = "../domain" }
+meeting-capture = { path = "../capture" }
+meeting-storage = { path = "../storage" }
+whisperx-worker = { path = "../worker-coordinator" }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
