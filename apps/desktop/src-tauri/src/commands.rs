@@ -116,10 +116,11 @@ pub fn download_model(
         state.model_root = Some(manager.installed_path());
         state.model_cancel = Some(Arc::clone(&cancel));
     }
+    let thread_manager = manager.clone();
     let thread_result = thread::Builder::new()
         .name("whisperx-model-download".into())
         .spawn(move || {
-            let result = manager.download(|progress| {
+            let result = thread_manager.download(|progress| {
                 let _ = app.emit(MODEL_PROGRESS_EVENT, progress);
             });
             if let Ok(mut state) = state.lock() {
@@ -130,7 +131,7 @@ pub fn download_model(
                     let _ = app.emit(
                         MODEL_PROGRESS_EVENT,
                         ModelStatus {
-                            model_id: manager.manifest().model_id.clone(),
+                            model_id: thread_manager.manifest().model_id.clone(),
                             state: whisperx_worker::ModelState::Ready,
                             downloaded_bytes: total_bytes,
                             total_bytes,
@@ -155,7 +156,7 @@ pub fn download_model(
     }
     Ok(ModelDownloadResponse {
         started: true,
-        total_bytes: manager.manifest().total_size(),
+        total_bytes,
     })
 }
 
