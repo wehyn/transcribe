@@ -6,14 +6,17 @@ import {
   formatCitation,
   mergeTranscriptSegments,
   normalizeTranscriptPayload,
+  modelStatusLabel,
   serializeMeetingExport,
   type MeetingNotes,
   type NoteItem,
+  type ModelStatus,
   type TranscriptSegment,
 } from './model';
 import {
   invokeOrDemo,
   listenToEvents,
+  listenToEvent,
   UI_EVENTS,
   type UiEventName,
 } from './bridge';
@@ -92,6 +95,12 @@ function errorMessage(reason: unknown): string {
     return String((reason as { message: unknown }).message);
   }
   return 'The desktop bridge could not complete that action.';
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function asCapabilities(value: unknown): Capabilities | null {
@@ -234,6 +243,9 @@ export default function App() {
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState(false);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [modelDownloading, setModelDownloading] = useState(false);
+  const [modelManifest, setModelManifest] = useState<{ total_bytes: number } | null>(null);
 
   const hasNativeBridge = typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke);
 
@@ -254,6 +266,8 @@ export default function App() {
   const displayTitle = title.trim() || 'Untitled meeting';
   const setupLocked = state !== 'setup';
   const canRecord = consent && state === 'setup' && !deleted;
+  const modelReady = !hasNativeBridge || modelStatus?.state === 'ready';
+  const modelBusy = modelDownloading || modelStatus?.state === 'downloading';
   const canExport = Boolean(finalNotes) && !exporting && !deleting && !deleted;
   const canDelete = state === 'stopped' || state === 'ready' || state === 'error';
   const microphoneStatus = capabilities ? (capabilities.microphone_available ? 'Available · opens on Record' : 'Unavailable · check permissions') : status;
@@ -287,6 +301,50 @@ export default function App() {
       });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!hasNativeBridge) return undefined;
+    let active = true;
+    invokeOrDemo('model_status')
+      .then((value) => {
+        if (active && value && typeof value === 'object') setModelStatus(value as ModelStatus);
+      })
+      .catch((reason) => {
+        if (active) setError(`Model status unavailable: ${errorMessage(reason)}`);
+      });
+    invokeOrDemo('model_manifest')
+      .then((value) => {
+        if (active && value && typeof value === 'object' && 'total_bytes' in value) {
+          setModelManifest(value as { total_bytes: number });
+        }
+      })
+      .catch(() => undefined);
+    let cleanup: (() => void) | undefined;
+    let errorCleanup: (() => void) | undefined;
+    listenToEvent(UI_EVENTS.modelProgress, (payload) => {
+      if (active && payload && typeof payload === 'object') {
+        const next = payload as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      }
+    }).then((unlisten) => {
+      cleanup = unlisten;
+    });
+    listenToEvent(UI_EVENTS.modelError, (payload) => {
+      if (!active) return;
+      const message = errorMessage(payload);
+      setModelDownloading(false);
+      setModelStatus((current) => current ? { ...current, state: 'error', error: message } : current);
+      setError(`Model download failed: ${message}`);
+    }).then((unlisten) => {
+      errorCleanup = unlisten;
+    });
+    return () => {
+      active = false;
+      cleanup?.();
+      errorCleanup?.();
+    };
+  }, [hasNativeBridge]);
 
   useEffect(() => {
     let active = true;
@@ -396,7 +454,10 @@ export default function App() {
   };
 
   const startRecording = async () => {
-    if (!canRecord) return;
+    if (!canRecord || !modelReady) {
+      if (!modelReady) setError('Download the WhisperX model before recording.');
+      return;
+    }
     setError(null);
     try {
       await invokeAction('create_session', { language, title: displayTitle });
@@ -415,6 +476,44 @@ export default function App() {
       setError(errorMessage(reason));
       setHealth({ connection: 'error', message: 'Recording did not start.' });
       setState('setup');
+    }
+  };
+
+  const downloadModel = async () => {
+    if (modelBusy || !hasNativeBridge) return;
+    setModelDownloading(true);
+    setModelStatus((current) => current ? { ...current, state: 'downloading', error: null } : current);
+    setError(null);
+    try {
+      await invokeAction('download_model');
+    } catch (reason) {
+      setError(`Model download failed: ${errorMessage(reason)}`);
+      setModelStatus((current) => current ? { ...current, state: 'error', error: errorMessage(reason) } : current);
+    } finally {
+      const status = await invokeOrDemo('model_status').catch(() => undefined);
+      if (status && typeof status === 'object') {
+        const next = status as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      }
+    }
+  };
+
+  const recoverModel = async () => {
+    if (!hasNativeBridge) return;
+    try {
+      const value = await invokeAction('model_recover');
+      if (value && typeof value === 'object') setModelStatus(value as ModelStatus);
+    } catch (reason) {
+      setError(`Could not recover model setup: ${errorMessage(reason)}`);
+    }
+  };
+
+  const cancelModelDownload = async () => {
+    try {
+      await invokeAction('cancel_model_download');
+    } catch (reason) {
+      setError(`Could not cancel model download: ${errorMessage(reason)}`);
     }
   };
 
@@ -549,7 +648,9 @@ export default function App() {
         </div>
 
         <label className="consent-row"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} disabled={setupLocked || deleted} /><span className="checkmark">✓</span><span>I have consent to record this meeting and understand audio is stored locally.</span></label>
-        <button className="record-button" type="button" disabled={!canRecord} onClick={startRecording}><span className="record-icon" /> Record meeting</button>
+        <div className="model-setup" aria-live="polite"><div><div className="section-kicker">WHISPERX MODEL</div><strong>{modelStatus?.state === 'ready' ? 'Ready for offline transcription' : modelStatus?.state === 'downloading' ? `Downloading ${modelStatus.current_asset ?? 'model files'}…` : 'Download the local transcription model'}</strong><span>{modelStatus?.state === 'ready' ? 'The model is installed locally. Recording will not download anything.' : `Required once before your first recording${modelManifest ? ` · ${formatBytes(modelManifest.total_bytes)}` : ''}.`}</span></div><div className="model-actions">{!hasNativeBridge ? <span className="model-percent">Desktop app required</span> : modelStatus?.state === 'ready' ? <span className="ready-label"><span className="ready-dot" /> Ready</span> : modelBusy ? <><span className="model-percent">{modelStatus?.percent ?? 0}%</span><button className="source-action" type="button" onClick={cancelModelDownload}>Cancel</button><button className="source-action" type="button" onClick={recoverModel}>Recover</button></> : <button className="secondary-button" type="button" onClick={downloadModel}>Download model</button>}</div>{modelBusy && <div className="progress-track model-progress"><span style={{ width: `${modelStatus?.percent ?? 0}%` }} /></div>}{modelStatus?.state === 'error' && <p className="error-note">{modelStatus.error ?? 'The model could not be installed. Retry the download.'}</p>}</div>
+
+        <button className="record-button" type="button" disabled={!canRecord || !modelReady} onClick={startRecording}><span className="record-icon" /> {modelReady ? 'Record meeting' : 'Download model to record'}</button>
         <p className="privacy-note"><span>⌁</span> Nothing is captured, processed, or saved before you press Record.</p>
         {error && <p className="error-note" role="alert">{error}</p>}
         {deleted && <p className="success-note" role="status">Meeting deleted. Audio and notes were removed from this workspace.</p>}

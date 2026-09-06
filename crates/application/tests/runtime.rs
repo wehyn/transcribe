@@ -15,6 +15,27 @@ fn runtime() -> MeetingRuntime {
 }
 
 #[test]
+fn runtime_refuses_to_record_when_model_is_not_ready() {
+    let directory = tempdir().unwrap();
+    let mut runtime = MeetingRuntime::with_worker_factory_and_model_readiness(
+        CaptureConfig::dual_source(LanguageMode::Taglish),
+        Box::new(FakeCaptureSource::new(CaptureCapabilities {
+            microphone_available: true,
+            system_audio_available: true,
+        })),
+        meeting_application::DefaultWorkerFactory::for_resource_root(directory.path()),
+        false,
+    );
+
+    runtime.accept_consent();
+
+    assert!(matches!(
+        runtime.record(directory.path().join("meeting")),
+        Err(ApplicationError::ModelNotReady)
+    ));
+}
+
+#[test]
 fn runtime_never_creates_audio_artifacts_before_record() {
     let directory = tempdir().unwrap();
     let recording_path = directory.path().join("meeting");

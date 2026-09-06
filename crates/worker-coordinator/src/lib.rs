@@ -2,6 +2,7 @@
 
 mod coordinator;
 mod export;
+mod model;
 mod notes;
 mod process;
 mod protocol;
@@ -14,6 +15,10 @@ pub use coordinator::{
     provisional_result,
 };
 pub use export::{export_files, json as notes_json, markdown as notes_markdown};
+pub use model::{
+    HttpModelSource, ModelAsset, ModelAssetResponse, ModelAssetSource, ModelError, ModelManager,
+    ModelManifest, ModelState, ModelStatus, default_model_manifest, model_is_ready,
+};
 pub use notes::{
     Citation, DraftNotes, MeetingNotes, NoteItem, NoteVersion, NotesError, generate_final_notes,
 };

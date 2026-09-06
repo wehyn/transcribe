@@ -60,7 +60,11 @@ impl WorkerConfig {
         let worker_root = env::var_os("WHISPERX_WORKER_ROOT")
             .map(|value| resolve_relative_to(&resource_dir, PathBuf::from(value)))
             .unwrap_or_else(|| bundled_worker_resource_root(&resource_dir));
-        Self::from_worker_root(worker_root)
+        let mut config = Self::from_worker_root(worker_root)?;
+        if let Ok(python) = env::var("WHISPERX_PYTHON") {
+            config.python = resolve_python_override(PathBuf::from(python), &resource_dir);
+        }
+        Ok(config)
     }
 
     /// Preserve the source-tree environment interface for local tooling.
@@ -99,6 +103,11 @@ impl WorkerConfig {
             return Err(WorkerConfigError::UnsafePythonCommand(self.python.clone()));
         }
         Ok(())
+    }
+
+    pub fn with_model_path(mut self, model_path: impl AsRef<Path>) -> Self {
+        self.model = model_path.as_ref().to_string_lossy().into_owned();
+        self
     }
 
     fn with_paths(python: PathBuf, script: PathBuf) -> Self {

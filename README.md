@@ -34,9 +34,11 @@ cd apps/desktop/ui && npm install && npm run build
 
 The portable Rust and UI checks pass on Linux. The Tauri crate itself requires Linux GTK/WebKit development packages to compile on Linux; macOS packaging and native capture must be built on macOS.
 
-## WhisperX environment
+## WhisperX environment and model setup
 
-The Python worker is on-demand and communicates over protocol version `1`. Install the pinned CPU environment from `crates/worker-coordinator/python/requirements-cpu.txt`; no model is downloaded by the Rust build. Configure `WHISPERX_PYTHON`, `WHISPERX_WORKER_SCRIPT`, `WHISPERX_MODEL`, `WHISPERX_DEVICE`, and `WHISPERX_COMPUTE_TYPE` for a local or bundled worker environment.
+The Python worker is on-demand and communicates over protocol version `1`. Install the pinned CPU environment from `crates/worker-coordinator/python/requirements-cpu.txt`. The desktop app provides a **Download model** action for the pinned `faster-whisper-large-v3` assets. The download is Rust-owned, resumable, checksum-validated, stored under the app-data directory, and installed atomically. Recording stays disabled until the model reports `Ready`; downloading never opens audio devices or starts the WhisperX worker.
+
+Configure `WHISPERX_PYTHON`, `WHISPERX_WORKER_SCRIPT`, `WHISPERX_MODEL`, `WHISPERX_DEVICE`, and `WHISPERX_COMPUTE_TYPE` for a local or bundled worker environment. The packaged worker receives the validated local model directory rather than relying on a first-record network download.
 
 ## macOS validation still required
 

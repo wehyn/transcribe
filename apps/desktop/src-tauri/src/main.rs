@@ -17,6 +17,12 @@ fn main() {
             commands::delete_meeting,
             commands::shutdown,
             commands::session_state,
+            commands::model_status,
+            commands::model_manifest,
+            commands::model_recover,
+            commands::download_model,
+            commands::cancel_model_download,
+            commands::remove_model,
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {

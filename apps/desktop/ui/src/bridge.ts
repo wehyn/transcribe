@@ -10,6 +10,8 @@ export const UI_EVENTS = {
   health: 'capture-health',
   finalization: 'finalization-progress',
   error: 'worker-error',
+  modelProgress: 'model-download-progress',
+  modelError: 'model-download-error',
 } as const;
 
 export type UiEventName = (typeof UI_EVENTS)[keyof typeof UI_EVENTS];
