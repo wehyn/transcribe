@@ -22,7 +22,7 @@ pub struct WorkerStartContext {
     pub language: WorkerLanguageMode,
 }
 
-pub trait WorkerFactory {
+pub trait WorkerFactory: Send {
     fn start(
         &mut self,
         context: WorkerStartContext,

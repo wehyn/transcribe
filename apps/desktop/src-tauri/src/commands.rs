@@ -10,7 +10,7 @@ use tauri::{Emitter, Manager, State};
 use meeting_application::{DefaultWorkerFactory, MeetingRuntime};
 use meeting_capture::{CaptureSource, MacOsCaptureSource};
 use meeting_domain::{CaptureConfig, LanguageMode, SessionState};
-use meeting_storage::{LocalSessionStore, SessionRecord};
+use meeting_storage::{DurableSessionRecord as SessionRecord, LocalSessionStore};
 use whisperx_worker::{ModelManager, ModelStatus, default_model_manifest};
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +45,8 @@ pub struct DesktopState {
     pub(crate) model_root: Option<PathBuf>,
     pub(crate) model_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
+
+pub type SharedDesktopState = Arc<Mutex<DesktopState>>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelDownloadResponse {
@@ -110,9 +112,10 @@ pub fn model_recover(app: tauri::AppHandle) -> Result<ModelStatus, String> {
 
 #[tauri::command]
 pub fn download_model(
-    state: State<'_, Mutex<DesktopState>>,
+    state: State<'_, SharedDesktopState>,
     app: tauri::AppHandle,
 ) -> Result<ModelDownloadResponse, String> {
+    let state = state.inner().clone();
     let manager = model_manager(&app)?;
     let total_bytes = manager.manifest().total_size();
     let cancel = ModelManager::cancel_handle();
@@ -125,13 +128,14 @@ pub fn download_model(
         state.model_cancel = Some(Arc::clone(&cancel));
     }
     let thread_manager = manager.clone();
+    let thread_state = Arc::clone(&state);
     let thread_result = thread::Builder::new()
         .name("whisperx-model-download".into())
         .spawn(move || {
             let result = thread_manager.download(|progress| {
                 let _ = app.emit(MODEL_PROGRESS_EVENT, progress);
             });
-            if let Ok(mut state) = state.lock() {
+            if let Ok(mut state) = thread_state.lock() {
                 state.model_cancel = None;
             }
             match result {
@@ -155,7 +159,7 @@ pub fn download_model(
 }
 
 #[tauri::command]
-pub fn cancel_model_download(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn cancel_model_download(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     if let Some(cancel) = &state.model_cancel {
         cancel.store(true, Ordering::Relaxed);
@@ -166,10 +170,14 @@ pub fn cancel_model_download(state: State<'_, Mutex<DesktopState>>) -> Result<()
 }
 
 #[tauri::command]
-pub fn remove_model(app: tauri::AppHandle) -> Result<ModelStatus, String> {
-    let manager = model_manager(&app)?;
-    manager.remove().map_err(|error| error.to_string())?;
-    Ok(manager.status())
+pub async fn remove_model(app: tauri::AppHandle) -> Result<ModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = model_manager(&app)?;
+        manager.remove().map_err(|error| error.to_string())?;
+        Ok(manager.status())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn session_or_error(state: &mut DesktopState) -> Result<&mut MeetingRuntime, String> {
@@ -188,7 +196,7 @@ pub fn capabilities() -> CapabilityResponse {
 
 #[tauri::command]
 pub fn create_session(
-    state: State<'_, Mutex<DesktopState>>,
+    state: State<'_, SharedDesktopState>,
     app: tauri::AppHandle,
     title: Option<String>,
     language: Option<LanguageRequest>,
@@ -219,14 +227,14 @@ pub fn create_session(
 }
 
 #[tauri::command]
-pub fn accept_consent(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn accept_consent(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     session_or_error(&mut state)?.accept_consent();
     Ok(())
 }
 
 #[tauri::command]
-pub fn record(state: State<'_, Mutex<DesktopState>>, app: tauri::AppHandle) -> Result<(), String> {
+pub fn record(state: State<'_, SharedDesktopState>, app: tauri::AppHandle) -> Result<(), String> {
     let model_path = model_manager(&app)?.installed_path();
     if !whisperx_worker::model_is_ready(&model_path) {
         return Err("download the WhisperX model before recording".into());
@@ -264,7 +272,7 @@ pub fn record(state: State<'_, Mutex<DesktopState>>, app: tauri::AppHandle) -> R
 }
 
 #[tauri::command]
-pub fn pause(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn pause(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     session_or_error(&mut state)?
         .pause()
@@ -273,7 +281,7 @@ pub fn pause(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn resume(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn resume(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     session_or_error(&mut state)?
         .resume()
@@ -282,7 +290,7 @@ pub fn resume(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn stop(state: State<'_, Mutex<DesktopState>>) -> Result<String, String> {
+pub fn stop(state: State<'_, SharedDesktopState>) -> Result<String, String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let path = session_or_error(&mut state)?
         .stop()
@@ -301,7 +309,7 @@ pub enum ExportFormat {
 
 #[tauri::command]
 pub fn export_meeting(
-    state: State<'_, Mutex<DesktopState>>,
+    state: State<'_, SharedDesktopState>,
     app: tauri::AppHandle,
     destination: PathBuf,
     format: ExportFormat,
@@ -339,7 +347,7 @@ pub fn export_meeting(
 }
 
 #[tauri::command]
-pub fn delete_meeting(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn delete_meeting(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     let runtime = state.runtime.take().ok_or("session not created")?;
     if matches!(
@@ -367,7 +375,7 @@ pub fn delete_meeting(state: State<'_, Mutex<DesktopState>>) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn shutdown(state: State<'_, Mutex<DesktopState>>) -> Result<(), String> {
+pub fn shutdown(state: State<'_, SharedDesktopState>) -> Result<(), String> {
     let mut state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     if let Some(runtime) = state.runtime.as_mut() {
         if matches!(
@@ -401,7 +409,7 @@ fn update_session_record(
 }
 
 #[tauri::command]
-pub fn session_state(state: State<'_, Mutex<DesktopState>>) -> Result<SessionState, String> {
+pub fn session_state(state: State<'_, SharedDesktopState>) -> Result<SessionState, String> {
     let state = state.lock().map_err(|_| "desktop state lock poisoned")?;
     Ok(state
         .runtime

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/capabilities.json",
+  "identifier": "default",
+  "description": "Permissions for the Meeting Notes desktop window.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

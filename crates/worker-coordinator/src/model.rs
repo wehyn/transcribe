@@ -350,7 +350,7 @@ impl ModelManager {
 
     pub fn status(&self) -> ModelStatus {
         let install_path = self.installed_path();
-        if self.validate_installation().is_ok() {
+        if self.has_complete_installation() {
             return ModelStatus {
                 model_id: self.manifest.model_id.clone(),
                 state: ModelState::Ready,
@@ -391,6 +391,24 @@ impl ModelManager {
             install_path: None,
             error: None,
         }
+    }
+
+    fn has_complete_installation(&self) -> bool {
+        let install_path = self.installed_path();
+        let Ok(metadata) = fs::symlink_metadata(&install_path) else {
+            return false;
+        };
+        if !metadata.file_type().is_dir() {
+            return false;
+        }
+        self.manifest.assets.iter().all(|asset| {
+            let Ok(path) = safe_join(&install_path, &asset.path) else {
+                return false;
+            };
+            fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_file() && metadata.len() == asset.size)
+                .unwrap_or(false)
+        })
     }
 
     pub fn recover_download(&self) -> Result<ModelStatus, ModelError> {

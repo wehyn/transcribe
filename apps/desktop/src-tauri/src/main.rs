@@ -2,9 +2,13 @@
 
 mod commands;
 
+use tauri::Emitter;
+
 fn main() {
     tauri::Builder::default()
-        .manage(std::sync::Mutex::new(commands::DesktopState::default()))
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(
+            commands::DesktopState::default(),
+        )))
         .invoke_handler(tauri::generate_handler![
             commands::capabilities,
             commands::create_session,
