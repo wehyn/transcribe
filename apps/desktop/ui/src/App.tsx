@@ -245,6 +245,9 @@ export default function App() {
   const [deleted, setDeleted] = useState(false);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [modelDownloading, setModelDownloading] = useState(false);
+  const [modelRemoving, setModelRemoving] = useState(false);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [modelConfirmOpen, setModelConfirmOpen] = useState(false);
   const [modelManifest, setModelManifest] = useState<{ total_bytes: number } | null>(null);
 
   const hasNativeBridge = typeof window !== 'undefined' && Boolean(window.__TAURI__?.core?.invoke);
@@ -266,8 +269,9 @@ export default function App() {
   const displayTitle = title.trim() || 'Untitled meeting';
   const setupLocked = state !== 'setup';
   const canRecord = consent && state === 'setup' && !deleted;
-  const modelReady = !hasNativeBridge || modelStatus?.state === 'ready';
+  const modelReady = !hasNativeBridge || (modelStatus?.state === 'ready' && !modelRemoving);
   const modelBusy = modelDownloading || modelStatus?.state === 'downloading';
+  const modelRemovable = hasNativeBridge && !modelBusy && !modelRemoving && state !== 'recording' && state !== 'paused' && state !== 'processing';
   const canExport = Boolean(finalNotes) && !exporting && !deleting && !deleted;
   const canDelete = state === 'stopped' || state === 'ready' || state === 'error';
   const microphoneStatus = capabilities ? (capabilities.microphone_available ? 'Available · opens on Record' : 'Unavailable · check permissions') : status;
@@ -305,10 +309,14 @@ export default function App() {
   useEffect(() => {
     if (!hasNativeBridge) return undefined;
     let active = true;
-    invokeOrDemo('model_status')
+    const refreshModelStatus = () => invokeOrDemo('model_status')
       .then((value) => {
-        if (active && value && typeof value === 'object') setModelStatus(value as ModelStatus);
-      })
+        if (!active || !value || typeof value !== 'object') return;
+        const next = value as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      });
+    refreshModelStatus()
       .catch((reason) => {
         if (active) setError(`Model status unavailable: ${errorMessage(reason)}`);
       });
@@ -483,6 +491,7 @@ export default function App() {
     if (modelBusy || !hasNativeBridge) return;
     setModelDownloading(true);
     setModelStatus((current) => current ? { ...current, state: 'downloading', error: null } : current);
+    setModelNotice(null);
     setError(null);
     try {
       await invokeAction('download_model');
@@ -506,6 +515,50 @@ export default function App() {
       if (value && typeof value === 'object') setModelStatus(value as ModelStatus);
     } catch (reason) {
       setError(`Could not recover model setup: ${errorMessage(reason)}`);
+    }
+  };
+
+  const requestUninstallModel = () => {
+    if (!hasNativeBridge) {
+      setModelNotice('Open the native desktop app to manage the local model.');
+      return;
+    }
+    if (modelRemoving) return;
+    if (modelBusy) {
+      setModelNotice('Wait for the model download to finish before uninstalling it.');
+      return;
+    }
+    if (state === 'recording' || state === 'paused' || state === 'processing') {
+      setModelNotice('Stop or finish the current meeting before uninstalling the model.');
+      return;
+    }
+    setError(null);
+    setModelNotice(null);
+    setModelConfirmOpen(true);
+  };
+
+  const uninstallModel = async () => {
+    if (!modelRemovable) {
+      setModelConfirmOpen(false);
+      setError('The model is busy or a meeting is in progress. Try again when the app is idle.');
+      return;
+    }
+    setModelConfirmOpen(false);
+    setModelRemoving(true);
+    setModelNotice('Uninstalling the local WhisperX model…');
+    try {
+      const value = await invokeAction('remove_model');
+      if (value && typeof value === 'object') {
+        const next = value as ModelStatus;
+        setModelStatus(next);
+        setModelDownloading(next.state === 'downloading');
+      }
+      setModelNotice('Model uninstalled successfully. You can download it again anytime.');
+    } catch (reason) {
+      setModelNotice(null);
+      setError(`Could not uninstall the model: ${errorMessage(reason)}`);
+    } finally {
+      setModelRemoving(false);
     }
   };
 
@@ -648,7 +701,9 @@ export default function App() {
         </div>
 
         <label className="consent-row"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} disabled={setupLocked || deleted} /><span className="checkmark">✓</span><span>I have consent to record this meeting and understand audio is stored locally.</span></label>
-        <div className="model-setup" aria-live="polite"><div><div className="section-kicker">WHISPERX MODEL</div><strong>{modelStatus?.state === 'ready' ? 'Ready for offline transcription' : modelStatus?.state === 'downloading' ? `Downloading ${modelStatus.current_asset ?? 'model files'}…` : 'Download the local transcription model'}</strong><span>{modelStatus?.state === 'ready' ? 'The model is installed locally. Recording will not download anything.' : `Required once before your first recording${modelManifest ? ` · ${formatBytes(modelManifest.total_bytes)}` : ''}.`}</span></div><div className="model-actions">{!hasNativeBridge ? <span className="model-percent">Desktop app required</span> : modelStatus?.state === 'ready' ? <span className="ready-label"><span className="ready-dot" /> Ready</span> : modelBusy ? <><span className="model-percent">{modelStatus?.percent ?? 0}%</span><button className="source-action" type="button" onClick={cancelModelDownload}>Cancel</button><button className="source-action" type="button" onClick={recoverModel}>Recover</button></> : <button className="secondary-button" type="button" onClick={downloadModel}>Download model</button>}</div>{modelBusy && <div className="progress-track model-progress"><span style={{ width: `${modelStatus?.percent ?? 0}%` }} /></div>}{modelStatus?.state === 'error' && <p className="error-note">{modelStatus.error ?? 'The model could not be installed. Retry the download.'}</p>}</div>
+        <div className="model-setup" aria-live="polite" aria-busy={modelRemoving}><div><div className="section-kicker">WHISPERX MODEL</div><strong>{modelRemoving ? 'Uninstalling local model…' : modelStatus?.state === 'ready' ? 'Ready for offline transcription' : modelStatus?.state === 'downloading' ? `Downloading ${modelStatus.current_asset ?? 'model files'}…` : 'Download the local transcription model'}</strong><span>{modelRemoving ? 'Removing the local model files. Please wait.' : modelStatus?.state === 'ready' ? 'The model is installed locally. Recording will not download anything.' : `Required once before your first recording${modelManifest ? ` · ${formatBytes(modelManifest.total_bytes)}` : ''}.`}</span></div><div className="model-actions">{!hasNativeBridge ? <span className="model-percent">Desktop app required</span> : modelBusy ? <><span className="model-percent">{modelStatus?.percent ?? 0}%</span><button className="source-action" type="button" onClick={cancelModelDownload}>Cancel</button><button className="source-action" type="button" onClick={recoverModel}>Recover</button></> : modelStatus?.state === 'ready' ? <><span className="ready-label"><span className="ready-dot" /> Ready</span><button className="delete-button" type="button" disabled={modelRemoving} onClick={requestUninstallModel}>{modelRemoving ? 'Uninstalling…' : 'Uninstall model'}</button></> : <><button className="secondary-button" type="button" disabled={modelRemoving} onClick={downloadModel}>Download model</button>{(modelStatus?.state === 'error' || (modelStatus?.downloaded_bytes ?? 0) > 0) && <button className="delete-button" type="button" disabled={modelRemoving} onClick={requestUninstallModel}>{modelRemoving ? 'Uninstalling…' : 'Uninstall model'}</button>}</>}</div>{modelBusy && <div className="progress-track model-progress"><span style={{ width: `${modelStatus?.percent ?? 0}%` }} /></div>}{modelRemoving && <div className="progress-track model-progress uninstall-progress" aria-hidden="true"><span /></div>}{modelStatus?.state === 'error' && <p className="error-note">{modelStatus.error ?? 'The model could not be installed. Retry the download.'}</p>}{modelNotice && <p className={`model-feedback ${modelRemoving ? 'model-feedback-busy' : 'model-feedback-success'}`} role="status">{modelNotice}</p>}</div>
+
+        {modelConfirmOpen && <div className="model-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModelConfirmOpen(false); }}><div className="model-confirm" role="dialog" aria-modal="true" aria-labelledby="model-confirm-title" aria-describedby="model-confirm-description"><div className="section-kicker">REMOVE LOCAL FILES</div><h3 id="model-confirm-title">Uninstall the WhisperX model?</h3><p id="model-confirm-description">This removes about 3.09 GB from this Mac. You can download the model again later.</p><div className="model-confirm-actions"><button className="secondary-button" type="button" onClick={() => setModelConfirmOpen(false)}>Cancel</button><button className="delete-button" type="button" onClick={uninstallModel}>Uninstall model</button></div></div></div>}
 
         <button className="record-button" type="button" disabled={!canRecord || !modelReady} onClick={startRecording}><span className="record-icon" /> {modelReady ? 'Record meeting' : 'Download model to record'}</button>
         <p className="privacy-note"><span>⌁</span> Nothing is captured, processed, or saved before you press Record.</p>
