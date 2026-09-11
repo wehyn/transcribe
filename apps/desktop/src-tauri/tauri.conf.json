@@ -4,12 +4,19 @@
   "version": "0.1.0",
   "identifier": "com.wehyn.meeting-notes",
   "build": {
-    "frontendDist": "../../ui/dist",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:1420"
+    "frontendDist": "../ui/dist",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "../ui"
+    },
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "../ui"
+    },
+    "devUrl": "http://127.0.0.1:5173"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Meeting Notes",

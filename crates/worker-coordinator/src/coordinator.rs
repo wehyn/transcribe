@@ -28,7 +28,7 @@ pub enum CoordinatorError {
     Window(String),
 }
 
-pub trait WorkerTransport {
+pub trait WorkerTransport: Send {
     fn send(&mut self, request: &WorkerRequest) -> Result<WorkerResponse, CoordinatorError>;
 }
 
